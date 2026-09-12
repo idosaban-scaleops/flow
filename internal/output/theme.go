@@ -90,7 +90,6 @@ func FangColorScheme(plain bool) func(lipgloss.LightDarkFunc) fang.ColorScheme {
 		base.Command = theme.AccentColor
 		base.Flag = theme.SuccessColor
 		base.Argument = theme.SuccessColor
-		base.ErrorHeader = [2]color.Color{theme.ErrorColor, base.ErrorHeader[1]}
 		base.DimmedArgument = theme.MutedColor
 		base.Comment = theme.MutedColor
 		return base
