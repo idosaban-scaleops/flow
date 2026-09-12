@@ -25,7 +25,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version-file: .tool-versions
           cache: true
 
       # The integration tests create real repositories, which need a committer
@@ -52,7 +52,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version-file: .tool-versions
           cache: true
 
       # The build tags and timeout live in .golangci.yaml; the pinned

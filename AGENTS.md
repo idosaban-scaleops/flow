@@ -18,8 +18,11 @@ make golden             # regenerate golden files after an intentional change
 Run `make lint test-integration` before declaring any change complete. Both must
 be clean; `make test` alone skips the build-tagged tests that exercise real git.
 
-Toolchain versions are pinned: Go 1.26+ (required by go-github v91) and
-`golangci-lint` 2.12.2 via `.tool-versions`. `.golangci.yaml` uses the **v2
+Toolchain versions are pinned in `.tool-versions`, which asdf, CI and the
+GitHub Actions all read: Go 1.26.3 (1.26+ is required by go-github v91),
+`golangci-lint` 2.12.2 and `goreleaser` 2.18.1. `go.mod` keeps its own
+`go 1.26.0` line — that is the language floor for anyone installing flow as a
+module, not the toolchain this repo builds with. `.golangci.yaml` uses the **v2
 config schema** (`version: "2"`); the v1 schema fails at the config-parse stage
 with a confusing error.
 
