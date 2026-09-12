@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"image/color"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	"charm.land/lipgloss/v2"
 
 	"github.com/idosaban-scaleops/flow/internal/output"
 )
@@ -239,3 +243,60 @@ func TestNoColorStripsColorButKeepsAttributes(t *testing.T) {
 
 // colorEscape matches SGR sequences that set a foreground or background color.
 var colorEscape = regexp.MustCompile(`\x1b\[(?:[349][0-7]|10[0-7]|[34]8;)`)
+
+// TestFangSchemeFollowsBackground guards the seam between fang's color-scheme
+// callback and flow's palette. fang derives the light/dark resolver itself and
+// hands it to the callback; building the theme from anything else silently
+// pins help pages to one branch, which is how fang's chrome ended up on the
+// dark palette in light terminals.
+func TestFangSchemeFollowsBackground(t *testing.T) {
+	scheme := output.FangColorScheme(false)
+	dark := scheme(lipgloss.LightDark(true))
+	light := scheme(lipgloss.LightDark(false))
+
+	if dark.Title == light.Title {
+		t.Errorf("Title is %v on both backgrounds; the resolver was ignored", dark.Title)
+	}
+	if want := output.NewTheme(true).AccentColor; dark.Title != want {
+		t.Errorf("dark Title = %v, want the dark accent %v", dark.Title, want)
+	}
+	if want := output.NewTheme(false).AccentColor; light.Title != want {
+		t.Errorf("light Title = %v, want the light accent %v", light.Title, want)
+	}
+}
+
+// TestFangErrorHeaderIsLegible pins the ERROR badge's contrast. fang's
+// ErrorHeader is [2]color.Color{fg, bg}, and assigning flow's error color to
+// index 0 once painted the label rather than the chip, leaving red on red.
+func TestFangErrorHeaderIsLegible(t *testing.T) {
+	scheme := output.FangColorScheme(false)(lipgloss.LightDark(true))
+
+	fg, bg := scheme.ErrorHeader[0], scheme.ErrorHeader[1]
+	if fg == bg {
+		t.Fatalf("ERROR badge foreground and background are both %v", fg)
+	}
+	if ratio := contrast(fg, bg); ratio < 3 {
+		t.Errorf("ERROR badge contrast is %.2f:1 (fg %v on bg %v), want at least 3:1", ratio, fg, bg)
+	}
+}
+
+// contrast implements the WCAG relative-luminance contrast ratio.
+func contrast(a, b color.Color) float64 {
+	la, lb := luminance(a), luminance(b)
+	if lb > la {
+		la, lb = lb, la
+	}
+	return (la + 0.05) / (lb + 0.05)
+}
+
+func luminance(c color.Color) float64 {
+	r, g, b, _ := c.RGBA()
+	lin := func(v uint32) float64 {
+		s := float64(v) / 65535.0
+		if s <= 0.04045 {
+			return s / 12.92
+		}
+		return math.Pow((s+0.055)/1.055, 2.4)
+	}
+	return 0.2126*lin(r) + 0.7152*lin(g) + 0.0722*lin(b)
+}

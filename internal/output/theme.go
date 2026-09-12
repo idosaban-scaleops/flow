@@ -36,8 +36,13 @@ type Theme struct {
 
 // NewTheme builds the theme for a terminal with the given background.
 func NewTheme(darkBackground bool) Theme {
-	ld := lipgloss.LightDark(darkBackground)
+	return NewThemeFrom(lipgloss.LightDark(darkBackground))
+}
 
+// NewThemeFrom builds the theme from an existing resolver. fang hands its
+// color-scheme callback one it has already derived, and reusing it is what
+// keeps fang's help pages on the same light/dark branch as everything else.
+func NewThemeFrom(ld lipgloss.LightDarkFunc) Theme {
 	var (
 		green  = ld(lipgloss.Color("#0F7B3F"), lipgloss.Color("#5FD787"))
 		yellow = ld(lipgloss.Color("#8A6300"), lipgloss.Color("#F5C542"))
@@ -85,7 +90,7 @@ func FangColorScheme(plain bool) func(lipgloss.LightDarkFunc) fang.ColorScheme {
 			return plainScheme(base)
 		}
 
-		theme := NewTheme(true)
+		theme := NewThemeFrom(ld)
 		base.Title = theme.AccentColor
 		base.Command = theme.AccentColor
 		base.Flag = theme.SuccessColor
