@@ -1,0 +1,4 @@
+watching Build And Release run 34468169597 (https://github.com/o/r/actions/runs/34468169597)
+[00:00] Setup: Set up job
+[00:00] Setup: completed (success)
+[00:00] Helm Build: Linting chart

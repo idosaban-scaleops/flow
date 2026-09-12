@@ -1,0 +1,91 @@
+version: 2
+
+project_name: flow
+
+before:
+  hooks:
+    - go mod tidy
+    # fang registers a hidden `man` command; generate the pages from it.
+    - sh -c 'go run ./cmd/flow man > flow.1 2>/dev/null || true'
+
+builds:
+  - id: flow
+    main: ./cmd/flow
+    binary: flow
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .FullCommit }}
+      - -X main.date={{ .Date }}
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+universal_binaries:
+  - id: flow
+    replace: true
+    name_template: flow
+
+archives:
+  - id: flow
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - LICENSE
+      - src: flow.1
+        dst: man/man1/flow.1
+        info:
+          mode: 0644
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
+      - Merge pull request
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: Fixes
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: Documentation
+      regexp: '^.*?docs(\([[:word:]]+\))??!?:.+$'
+      order: 2
+    - title: Other
+      order: 99
+
+brews:
+  - name: flow
+    repository:
+      owner: idosaban-scaleops
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: https://github.com/idosaban-scaleops/flow
+    description: A personal workflow CLI for ticket-driven development
+    license: MIT
+    install: |
+      bin.install "flow"
+      man1.install "man/man1/flow.1" if File.exist?("man/man1/flow.1")
+      generate_completions_from_executable(bin/"flow", "completions")
+    test: |
+      system "#{bin}/flow", "--version"
+
+release:
+  prerelease: auto

@@ -1,0 +1,12 @@
+
+  [1mBuild And Release · RD-19472-original-req-in-graphs · r…[m
+
+  [m████████████████████████[m[m░░░░░░░░░░░░[m   67%   [m4m12s elapsed[m
+
+  [m✔[m  Setup                         [mdone in 41s[m
+  [m✔[m  Helm Build                    [mdone in 2m03s[m
+  [m⣾[m  Pre Release Helm              Publishing chart to H…
+  [m⣾[m  Pre Release Images / Build …  Building and pushing …
+  [m·[m  Pre Release Images / GPU      [mskipped[m
+
+  [mchart[m  [mv1.0.199-alpha-RD-19472-original-req-in-graphs…[m

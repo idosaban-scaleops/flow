@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The integration tests create real repositories, which need a committer
+      # identity on a fresh runner.
+      - name: Configure git
+        run: |
+          git config --global user.name flow-ci
+          git config --global user.email flow-ci@example.com
+
+      - run: go build ./...
+
+      - run: go vet ./...
+
+      - name: Unit tests
+        run: go test -race -short ./...
+
+      - name: Integration tests
+        run: go test -race -tags integration ./...
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.12.2
+          args: --build-tags integration --timeout 5m

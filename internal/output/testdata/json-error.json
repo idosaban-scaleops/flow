@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "not_found",
+    "message": "ticket RD-1 is not registered"
+  }
+}

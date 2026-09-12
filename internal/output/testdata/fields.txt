@@ -1,0 +1,3 @@
+ticket:            RD-19471
+branch:            RD-19471-add-new-toolbar
+pull request:      none

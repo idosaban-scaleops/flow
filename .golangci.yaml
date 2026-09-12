@@ -1,0 +1,85 @@
+version: "2"
+
+run:
+  timeout: 5m
+  build-tags:
+    - integration
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - copyloopvar
+    - errorlint
+    - gocritic
+    - gosec
+    - misspell
+    - nilerr
+    - noctx
+    - prealloc
+    - revive
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - wastedassign
+    - whitespace
+
+  settings:
+    staticcheck:
+      checks:
+        - all
+        # Naming an embedded struct explicitly (result.Entry.Slug) is clearer
+        # than relying on promotion when the embedding is an implementation
+        # detail of the payload type.
+        - -QF1008
+    errcheck:
+      check-type-assertions: true
+    govet:
+      enable-all: true
+      disable:
+        # `if err := f(); err != nil` inside a function that already has an err
+        # is the idiom this codebase uses everywhere; flagging it is noise.
+        - shadow
+        - fieldalignment
+    revive:
+      rules:
+        - name: exported
+          arguments:
+            - disableStutteringCheck
+        - name: package-comments
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+      disabled-checks:
+        - hugeParam
+        - rangeValCopy
+        - whyNoLint
+
+  exclusions:
+    rules:
+      # Writing to the terminal is the whole job of internal/output, and a
+      # failed write to stdout is not something a CLI can act on.
+      - path: internal/(output|ciwait|cli)/
+        linters:
+          - errcheck
+        source: fmt\.Fprint
+
+      # Tests are allowed to be blunt: unchecked writes to a buffer, long
+      # table-driven functions, and hard-coded credentials in fixtures.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - unparam
+          - noctx
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/idosaban-scaleops/flow
