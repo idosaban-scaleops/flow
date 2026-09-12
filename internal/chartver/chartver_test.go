@@ -96,6 +96,35 @@ func TestNewestPrefixCollision(t *testing.T) {
 	}
 }
 
+// TestNewestRejectsSiblingBranch is the anchoring rule. Infix("feat/x") is
+// "-alpha-feat-x-", which is a plain substring of a chart built for the
+// sibling branch "feat/x-2". Ordering by run ID made the sibling's newer build
+// the more likely pick, so `flow cluster upgrade` on feat/x installed
+// feat/x-2's chart.
+func TestNewestRejectsSiblingBranch(t *testing.T) {
+	if chartver.Match("1.2.4-alpha-feat-x-2-999", "feat/x") {
+		t.Error("feat/x matched a chart built for feat/x-2")
+	}
+	if !chartver.Match("1.2.4-alpha-feat-x-999", "feat/x") {
+		t.Error("feat/x must still match its own chart")
+	}
+
+	versions := []string{
+		"1.2.4-alpha-feat-x-2-999", // sibling branch, higher run ID
+		"1.2.4-alpha-feat-x-100",   // this branch
+	}
+	got, runID, ok := chartver.Newest(versions, "feat/x")
+	if !ok || got != "1.2.4-alpha-feat-x-100" || runID != 100 {
+		t.Errorf("Newest = %q,%d,%v; want this branch's own chart", got, runID, ok)
+	}
+
+	// The sibling still resolves its own chart correctly.
+	got, runID, ok = chartver.Newest(versions, "feat/x-2")
+	if !ok || got != "1.2.4-alpha-feat-x-2-999" || runID != 999 {
+		t.Errorf("sibling resolution = %q,%d,%v", got, runID, ok)
+	}
+}
+
 func TestNewestNoMatch(t *testing.T) {
 	if _, _, ok := chartver.Newest([]string{"v1.0.198", "v1.0.199"}, "RD-1-a"); ok {
 		t.Error("expected no match among release versions")

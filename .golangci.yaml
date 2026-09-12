@@ -11,6 +11,11 @@ linters:
     - bodyclose
     - copyloopvar
     - errorlint
+    # The PRNone/PRUnknown invariant is the reason this is on: a switch over
+    # PRState, Phase or Conclusion that quietly omits a case is exactly the
+    # collapse the domain rules forbid, and only a linter catches it on every
+    # future switch.
+    - exhaustive
     - gocritic
     - gosec
     - misspell
@@ -34,6 +39,14 @@ linters:
         - -QF1008
     errcheck:
       check-type-assertions: true
+    exhaustive:
+      # Deliberately strict. A `default:` clause would otherwise exempt the
+      # switch, and the switches this linter is here for — the ones over
+      # ghapi.PRState — all have one. Exempting them would leave PRNone and
+      # PRUnknown free to collapse into a single branch, which is the one thing
+      # the domain rules forbid. Keep the `default:` as the guard against an
+      # out-of-range value, and name every real case alongside it.
+      default-signifies-exhaustive: false
     govet:
       enable-all: true
       disable:

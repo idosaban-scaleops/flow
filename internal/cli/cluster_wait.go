@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/idosaban-scaleops/flow/internal/ciwait"
 )
@@ -20,10 +21,15 @@ type waitFlags struct {
 	timeout        time.Duration
 	pollInterval   time.Duration
 	ignoreFailures bool
+
+	// flags is the set these were registered on, so apply can tell an
+	// explicitly passed --poll-interval from the default.
+	flags *pflag.FlagSet
 }
 
 func (w *waitFlags) register(cmd *cobra.Command, includeNoWait bool) {
-	f := cmd.Flags()
+	w.flags = cmd.Flags()
+	f := w.flags
 	if includeNoWait {
 		f.BoolVar(&w.noWait, "no-wait", false, "do not wait for CI to finish building the chart")
 	}
@@ -38,6 +44,7 @@ func (w waitFlags) apply(req *versionRequest) {
 	req.Wait = !w.noWait
 	req.WaitOpts.Timeout = w.timeout
 	req.WaitOpts.PollInterval = w.pollInterval
+	req.WaitOpts.PollIntervalSet = w.flags != nil && w.flags.Changed("poll-interval")
 	req.WaitOpts.IgnoreFailures = w.ignoreFailures
 }
 

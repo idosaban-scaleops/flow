@@ -10,7 +10,6 @@ import (
 	"context"
 	"fmt"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -72,8 +71,33 @@ func RunIDOf(version string) (int64, bool) {
 }
 
 // Match reports whether a chart version belongs to a branch.
+//
+// The infix must be followed by the run ID and nothing else. An unanchored
+// substring test would let a sibling branch's chart through: "feat/x" yields
+// the infix "-alpha-feat-x-", which is a substring of a version built for
+// "feat/x-2" ("1.2.4-alpha-feat-x-2-999"). Since Newest orders by run ID, the
+// sibling's newer build would then be the *more* likely pick, and
+// `flow cluster upgrade` would install the wrong branch's chart.
 func Match(version, branch string) bool {
-	return strings.Contains(version, Infix(branch))
+	infix := Infix(branch)
+	i := strings.LastIndex(version, infix)
+	if i < 0 {
+		return false
+	}
+	return allDigits(version[i+len(infix):])
+}
+
+// allDigits reports whether s is a non-empty run of ASCII digits.
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // Newest picks the version with the highest run ID.
@@ -82,12 +106,6 @@ func Match(version, branch string) bool {
 // suffix containing the branch name, and semver ordering compares that
 // alphanumerically, which puts "…-9" after "…-10".
 func Newest(versions []string, branch string) (version string, runID int64, found bool) {
-	type candidate struct {
-		version string
-		runID   int64
-	}
-
-	var candidates []candidate
 	for _, v := range versions {
 		if !Match(v, branch) {
 			continue
@@ -96,14 +114,11 @@ func Newest(versions []string, branch string) (version string, runID int64, foun
 		if !parsed {
 			continue
 		}
-		candidates = append(candidates, candidate{v, id})
+		if !found || id > runID {
+			version, runID, found = v, id, true
+		}
 	}
-	if len(candidates) == 0 {
-		return "", 0, false
-	}
-
-	sort.Slice(candidates, func(i, j int) bool { return candidates[i].runID > candidates[j].runID })
-	return candidates[0].version, candidates[0].runID, true
+	return version, runID, found
 }
 
 // NextTag bumps the third dot-separated component of a git tag, mirroring the

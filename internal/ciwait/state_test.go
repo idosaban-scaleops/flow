@@ -70,6 +70,27 @@ func TestNestedReusableWorkflowNamesMatch(t *testing.T) {
 	}
 }
 
+func TestTargetMatchRequiresASeparator(t *testing.T) {
+	// A bare HasPrefix widened the gate to any job whose name merely starts
+	// with the target, so the wait blocked on jobs it never meant to watch.
+	jobs := []ghapi.Job{
+		job("Pre Release Helm", ghapi.StatusCompleted, ghapi.ConclusionSuccess),
+		job("Pre Release Images / Build And Push", ghapi.StatusCompleted, ghapi.ConclusionSuccess),
+		// Neither of these gates: one is a differently-named job that shares a
+		// prefix, the other pluralizes it.
+		job("Pre Release Helm Coverage Report", ghapi.StatusQueued, ""),
+		job("Pre Release Images-e2e", ghapi.StatusQueued, ""),
+	}
+
+	got := ciwait.NewMachine(gatingJobs).Update(jobs)
+	if got.Matched != 2 {
+		t.Fatalf("matched %d jobs, want 2; prefix-sharing jobs must not gate: %+v", got.Matched, got.Jobs)
+	}
+	if got.Phase != ciwait.PhaseSucceeded {
+		t.Errorf("phase = %v, want succeeded", got.Phase)
+	}
+}
+
 func TestCollidingJobNamesAllGate(t *testing.T) {
 	// Four jobs share the display name "Pre Release Images"; all of them must
 	// finish, so one straggler keeps the wait open.
@@ -190,6 +211,23 @@ func TestIgnoreFailuresKeepsWaiting(t *testing.T) {
 	})
 	if got.Phase == ciwait.PhaseFailed {
 		t.Error("--ignore-failures must not stop the wait on a non-essential leg")
+	}
+}
+
+// TestOneCancelledLegDoesNotCancelTheRun separates a cancelled matrix leg from
+// a cancelled run. Reporting PhaseCancelled while siblings were still building
+// triggered a retarget, which ended the wait with ErrCancelled whenever no
+// newer run existed.
+func TestOneCancelledLegDoesNotCancelTheRun(t *testing.T) {
+	jobs := []ghapi.Job{
+		job("Pre Release Images / Build And Push", ghapi.StatusCompleted, ghapi.ConclusionCancelled),
+		job("Pre Release Images / Build And Push (2)", ghapi.StatusInProgress, ""),
+		job("Pre Release Helm", ghapi.StatusCompleted, ghapi.ConclusionSuccess),
+	}
+
+	got := ciwait.NewMachine(gatingJobs).Update(jobs)
+	if got.Phase != ciwait.PhaseWaiting {
+		t.Errorf("phase = %v, want waiting while a sibling leg is still building", got.Phase)
 	}
 }
 

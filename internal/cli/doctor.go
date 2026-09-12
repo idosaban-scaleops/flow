@@ -254,11 +254,15 @@ func (a *App) checkConfig() []check {
 	checks := []check{{Name: "config file", Level: levelPass, Detail: detail}}
 
 	assetsRoot := a.cfg.AssetsRoot()
-	if err := writable(assetsRoot); err != nil {
+	switch err := writable(assetsRoot, !a.DryRun()); {
+	case err != nil:
 		checks = append(checks, check{Name: "assets root", Level: levelWarn,
 			Detail: fmt.Sprintf("%s is not writable: %v", assetsRoot, err),
 			Hint:   "create it, or change assets.root in " + a.cfgPath})
-	} else {
+	case a.DryRun():
+		checks = append(checks, check{Name: "assets root", Level: levelPass,
+			Detail: assetsRoot + " (exists; --dry-run skipped the write probe)"})
+	default:
 		checks = append(checks, check{Name: "assets root", Level: levelPass, Detail: assetsRoot})
 	}
 
@@ -280,14 +284,23 @@ func (a *App) checkConfig() []check {
 	return checks
 }
 
-// writable reports whether a directory exists and can be written to, creating
-// nothing.
-func writable(dir string) error {
+// writable reports whether a directory exists and can be written to.
+//
+// probe controls the one write doctor performs: a temp file created and
+// immediately removed. It is the only filesystem mutation in the tree that does
+// not go through app.mutate, so --dry-run turns it off and the caller says the
+// check was only partial. Everything before it is pure inspection.
+func writable(dir string, probe bool) error {
 	info, err := os.Stat(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		// An absent assets root is fine as long as its parent is writable;
-		// flow creates it on demand.
-		return writable(filepath.Dir(dir))
+		// flow creates it on demand. filepath.Dir reaches a fixpoint at "/" or
+		// ".", both of which exist, so the recursion terminates there — but
+		// stop explicitly rather than relying on that.
+		if parent := filepath.Dir(dir); parent != dir {
+			return writable(parent, probe)
+		}
+		return err
 	}
 	if err != nil {
 		return err
@@ -295,13 +308,16 @@ func writable(dir string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("not a directory")
 	}
+	if !probe {
+		return nil
+	}
 
-	probe, err := os.CreateTemp(dir, ".flow-doctor-*")
+	f, err := os.CreateTemp(dir, ".flow-doctor-*")
 	if err != nil {
 		return err
 	}
-	name := probe.Name()
-	_ = probe.Close()
+	name := f.Name()
+	_ = f.Close()
 	return os.Remove(name)
 }
 
@@ -345,6 +361,8 @@ func (a *App) renderChecks(checks []check) {
 			level = t.Success.Render(string(c.Level))
 		case levelWarn:
 			level = t.Warn.Render(string(c.Level))
+		case levelFail:
+			level = t.Error.Render(string(c.Level))
 		default:
 			level = t.Error.Render(string(c.Level))
 		}

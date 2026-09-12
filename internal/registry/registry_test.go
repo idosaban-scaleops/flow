@@ -78,6 +78,25 @@ func TestUpsertPreservesCreatedAt(t *testing.T) {
 	}
 }
 
+func TestUpsertMatchesTicketIDCaseInsensitively(t *testing.T) {
+	// Find and Remove have always compared ticket IDs with EqualFold. Upsert
+	// used to compare exactly, so an "RD-1" upsert against a stored "rd-1"
+	// appended a duplicate instead of updating it.
+	f := &registry.File{Version: registry.Version}
+	f.Upsert(entry("rd-1", "lower"))
+
+	updated := entry("RD-1", "upper")
+	updated.CreatedAt = time.Time{}
+	f.Upsert(updated)
+
+	if len(f.Entries) != 1 {
+		t.Fatalf("want one entry, got %d: %+v", len(f.Entries), f.Entries)
+	}
+	if f.Entries[0].Slug != "upper" {
+		t.Errorf("slug = %q, want the upserted value", f.Entries[0].Slug)
+	}
+}
+
 func TestSameTicketInTwoRepos(t *testing.T) {
 	f := &registry.File{Version: registry.Version}
 	a := entry("RD-1", "a")

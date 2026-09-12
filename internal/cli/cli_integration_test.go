@@ -450,6 +450,82 @@ func TestPruneAdoptsAndDrops(t *testing.T) {
 	}
 }
 
+// TestPruneDryRunNeverWritesTheRegistry is the escape AGENTS.md warns about:
+// prune's apply closures call Registry.Update directly rather than going
+// through exec.Runner, so the dry-run wrapper never saw them. The --json
+// branch applied before the --dry-run guard was even reached, so
+// `flow prune --json --yes --dry-run` reconciled the registry for real.
+func TestPruneDryRunNeverWritesTheRegistry(t *testing.T) {
+	h := newHarness(t)
+	h.mustRun(h.repoRoot, "init", "RD-19471", "add", "new", "toolbar")
+
+	// Make there be something to prune: delete the worktree by hand.
+	gone := h.entries()[0].WorktreePath
+	if err := os.RemoveAll(gone); err != nil {
+		t.Fatal(err)
+	}
+	before := h.entries()
+	if len(before) != 1 {
+		t.Fatalf("setup: want one entry, got %d", len(before))
+	}
+
+	for _, args := range [][]string{
+		{"prune", "--json", "--yes", "--dry-run"},
+		{"prune", "--yes", "--dry-run"},
+		{"prune", "--dry-run"},
+	} {
+		h.mustRun(h.repoRoot, args...)
+		if got := h.entries(); len(got) != 1 {
+			t.Fatalf("flow %s changed the registry: %d entries, want 1",
+				strings.Join(args, " "), len(got))
+		}
+	}
+
+	// Without --dry-run it still does the work.
+	h.mustRun(h.repoRoot, "prune", "--json", "--yes")
+	if got := h.entries(); len(got) != 0 {
+		t.Errorf("prune --json --yes left %d entries, want 0", len(got))
+	}
+}
+
+// TestDeleteAllOnGoneWorktrees pins the prompt load of the shape most likely to
+// surprise: --all over worktrees the user already removed by hand. With --yes
+// it must still complete without hanging on a prompt.
+func TestDeleteAllOnGoneWorktrees(t *testing.T) {
+	h := newHarness(t)
+	h.mustRun(h.repoRoot, "init", "RD-19471", "add", "new", "toolbar")
+	h.mustRun(h.repoRoot, "init", "RD-19472", "second", "ticket")
+
+	for _, e := range h.entries() {
+		if err := os.RemoveAll(e.WorktreePath); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	h.mustRun(h.repoRoot, "delete", "--all", "--yes")
+	if got := h.entries(); len(got) != 0 {
+		t.Errorf("delete --all --yes left %d entries: %+v", len(got), got)
+	}
+}
+
+// TestDeleteAllJSONRequiresExplicitConsent is the --json contract: it never
+// implies consent for a destructive action.
+func TestDeleteAllJSONRequiresExplicitConsent(t *testing.T) {
+	h := newHarness(t)
+	h.mustRun(h.repoRoot, "init", "RD-19471", "add", "new", "toolbar")
+
+	_, _, err := h.run(h.repoRoot, "delete", "--all", "--json")
+	if err == nil {
+		t.Fatal("delete --all --json without --yes must not proceed")
+	}
+	if code := cli.ExitCodeFor(err); code != cli.ExitPrecondition {
+		t.Errorf("exit code = %d, want %d", code, cli.ExitPrecondition)
+	}
+	if got := h.entries(); len(got) != 1 {
+		t.Errorf("the entry was deleted without consent: %+v", got)
+	}
+}
+
 func TestVersionJSON(t *testing.T) {
 	h := newHarness(t)
 	stdout, _ := h.mustRun(h.repoRoot, "version", "--json")

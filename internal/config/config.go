@@ -84,8 +84,9 @@ type RepoConfig struct {
 	WaitForJobs         []string `koanf:"wait_for_jobs" yaml:"wait_for_jobs,omitempty"`
 }
 
-// ClusterConfig holds per-kube-context settings. Its presence in the config is
-// the allowlist: flow refuses to upgrade a context it has never been told about.
+// ClusterConfig holds per-kube-context settings. An unknown context is never
+// acted on silently: interactively flow asks for these and records them, and
+// non-interactively it refuses rather than guessing.
 type ClusterConfig struct {
 	ReleaseName string   `koanf:"release_name" yaml:"release_name"`
 	Namespace   string   `koanf:"namespace" yaml:"namespace"`

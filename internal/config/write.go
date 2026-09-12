@@ -112,6 +112,11 @@ func writeDocument(path string, doc document) error {
 // WriteFileAtomic writes data to path via a temp file in the same directory,
 // fsyncs it, and renames it into place, so a crash mid-write cannot truncate
 // the existing file.
+//
+// The parent directory is deliberately not fsynced after the rename. That
+// would be needed to guarantee the rename itself survives a power loss; for a
+// CLI writing its own config and registry, the atomic-replace guarantee is
+// what matters and the extra syscall on every write is not worth it.
 func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {

@@ -18,7 +18,6 @@ type deleteOptions struct {
 	all        bool
 	force      bool
 	keepBranch bool
-	keepAssets bool
 }
 
 type deleteOutcome struct {
@@ -56,8 +55,6 @@ worktree deletes without prompting.`),
 	f.BoolVar(&opts.all, "all", false, "operate on every ticket in the current repository")
 	f.BoolVar(&opts.force, "force", false, "skip every safety prompt and force removal")
 	f.BoolVar(&opts.keepBranch, "keep-branch", false, "keep the local branch")
-	f.BoolVar(&opts.keepAssets, "keep-assets", false,
-		"reserved; assets are never deleted, so this is a no-op")
 
 	cmd.RunE = app.runArgs(func(ctx context.Context, args []string) error {
 		if opts.all {
@@ -84,8 +81,6 @@ worktree deletes without prompting.`),
 }
 
 func (a *App) deleteAll(ctx context.Context, opts deleteOptions) error {
-	// --all alone must never auto-confirm; the combination with --yes has to be
-	// explicit.
 	dir, err := cwd()
 	if err != nil {
 		return err
@@ -103,6 +98,26 @@ func (a *App) deleteAll(ctx context.Context, opts deleteOptions) error {
 	if len(entries) == 0 {
 		a.Out.Status("no tickets registered for %s", repo.Key)
 		return nil
+	}
+
+	// One summary confirmation for the whole repository, naming the count.
+	// --all alone must never auto-confirm, and this is the only thing standing
+	// in front of `--all --force`, which skips every per-ticket prompt and
+	// force-removes each worktree along with any uncommitted work in it.
+	// confirmDestructive defaults to No and makes --json demand an explicit
+	// --yes.
+	summary := fmt.Sprintf("Delete all %d ticket(s) registered for %s?", len(entries), repo.Key)
+	if opts.force {
+		summary = fmt.Sprintf(
+			"Force-delete all %d ticket(s) registered for %s, discarding uncommitted work?",
+			len(entries), repo.Key)
+	}
+	if err := a.confirmDestructive(summary, strings.Join(ticketIDs(entries), ", ")); err != nil {
+		if errors.Is(err, output.ErrAborted) {
+			a.Out.Status("keeping every ticket in %s", repo.Key)
+			return nil
+		}
+		return err
 	}
 
 	var outcomes []deleteOutcome
@@ -135,6 +150,16 @@ func (a *App) deleteAll(ctx context.Context, opts deleteOptions) error {
 		return Failure("%d ticket(s) could not be deleted", failed)
 	}
 	return nil
+}
+
+// ticketIDs lists the ticket IDs an --all run would act on, for the summary
+// prompt's detail line.
+func ticketIDs(entries []registry.Entry) []string {
+	ids := make([]string, 0, len(entries))
+	for _, e := range entries {
+		ids = append(ids, e.TicketID)
+	}
+	return ids
 }
 
 func (a *App) deleteOne(ctx context.Context, got resolved, opts deleteOptions) (deleteOutcome, error) {
@@ -212,24 +237,53 @@ func (a *App) confirmDelete(ctx context.Context, e registry.Entry, repo gitx.Rep
 		a.cfg.Defaults.Remote+"/"+baseOf(a.cfg, e, repo))
 
 	var details []string
+
+	// An inspection that could not run must never read as "there is nothing to
+	// lose here". Both of these used to swallow their error and leave clean
+	// true, so a merged PR over an unreadable worktree deleted with no prompt
+	// at all — git's own non-force `worktree remove` was the only thing left
+	// standing between the user and discarded work.
 	clean := true
 	if worktreeExists(e.WorktreePath) {
-		if st, err := a.ReadGit(e.WorktreePath).StatusOf(ctx); err == nil {
-			if st.Dirty {
-				clean = false
-				details = append(details, fmt.Sprintf("%d uncommitted change(s)", st.ChangedFiles))
-			}
+		st, err := a.ReadGit(e.WorktreePath).StatusOf(ctx)
+		switch {
+		case err != nil:
+			clean = false
+			details = append(details, fmt.Sprintf("could not inspect the worktree: %v", err))
+		case st.Dirty:
+			clean = false
+			details = append(details, fmt.Sprintf("%d uncommitted change(s)", st.ChangedFiles))
 		}
 	}
-	unpushed, _ := a.ReadGit(e.WorktreePath).Unpushed(ctx,
+
+	// Unpushed commits belong to the branch, not the directory, so this still
+	// matters once the worktree is gone; ask git from the repository instead.
+	unpushedDir := e.WorktreePath
+	if !worktreeExists(e.WorktreePath) {
+		unpushedDir = repo.Root
+	}
+	unpushed, err := a.ReadGit(unpushedDir).Unpushed(ctx,
 		a.cfg.Defaults.Remote, e.Branch, baseOf(a.cfg, e, repo))
-	if len(unpushed) > 0 {
+	switch {
+	case err != nil:
+		clean = false
+		details = append(details, fmt.Sprintf("could not check for unpushed commits: %v", err))
+	case len(unpushed) > 0:
 		clean = false
 		details = append(details, describeUnpushed(unpushed))
 	}
 	if mergedLocally {
 		details = append(details, fmt.Sprintf("branch is already merged into %s locally",
 			baseOf(a.cfg, e, repo)))
+	}
+
+	// Shared by PRUnknown and by any enum value this build does not know
+	// about: both mean flow could not determine the state, which must never
+	// read like PRNone ("there is no PR").
+	undeterminable := func() error {
+		return a.confirmDestructive(
+			fmt.Sprintf("Could not determine whether %s is merged. Delete anyway?", e.Branch),
+			joinDetails(append(details, "reason: "+orDash(info.Reason, "unknown")), ""))
 	}
 
 	switch info.State {
@@ -248,6 +302,12 @@ func (a *App) confirmDelete(ctx context.Context, e registry.Entry, repo gitx.Rep
 				info.Number, e.TicketID, info.State),
 			joinDetails(details, info.URL))
 
+	case ghapi.PRUnknown:
+		// Named explicitly, not left to the default: PRNone and PRUnknown
+		// collapsing into one branch is the thing the domain rules forbid, and
+		// naming every state is what lets the linter enforce it.
+		return undeterminable()
+
 	case ghapi.PRNone:
 		summary := "worktree is clean, nothing unpushed"
 		if !clean {
@@ -260,9 +320,7 @@ func (a *App) confirmDelete(ctx context.Context, e registry.Entry, repo gitx.Rep
 			summary)
 
 	default:
-		return a.confirmDestructive(
-			fmt.Sprintf("Could not determine whether %s is merged. Delete anyway?", e.Branch),
-			joinDetails(append(details, "reason: "+orDash(info.Reason, "unknown")), ""))
+		return undeterminable()
 	}
 }
 

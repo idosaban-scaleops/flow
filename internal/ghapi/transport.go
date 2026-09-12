@@ -2,10 +2,12 @@ package ghapi
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"math/rand/v2"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -13,18 +15,26 @@ import (
 // maxRetries bounds retry attempts for 5xx and transport errors.
 const maxRetries = 3
 
-// RetryTransport retries transport errors, 5xx responses and 429s with
-// exponential backoff plus jitter. Implementing it as a RoundTripper means the
-// policy applies uniformly instead of being repeated at every call site.
+// maxRetryWait caps how long a server-supplied Retry-After or X-RateLimit-Reset
+// is honored. Past this, handing the 429 back so the caller can report a
+// rate-limit error beats blocking a CLI for minutes.
+const maxRetryWait = 60 * time.Second
+
+// RetryTransport retries transport errors, 5xx responses and 429s, preferring
+// the server's own Retry-After guidance over exponential backoff plus jitter.
+// Implementing it as a RoundTripper means the policy applies uniformly instead
+// of being repeated at every call site.
 type RetryTransport struct {
 	Base http.RoundTripper
-	// Sleep is time.Sleep in production; tests substitute a no-op.
+	// Sleep overrides the wait between attempts; tests substitute a no-op.
+	// Left nil, the wait is a cancellable timer, so Ctrl-C during a backoff
+	// aborts instead of running it out.
 	Sleep func(time.Duration)
 }
 
 // NewRetryTransport wraps base with the retry policy.
 func NewRetryTransport(base http.RoundTripper) *RetryTransport {
-	return &RetryTransport{Base: base, Sleep: time.Sleep}
+	return &RetryTransport{Base: base}
 }
 
 // RoundTrip implements http.RoundTripper.
@@ -42,33 +52,51 @@ func (t *RetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	var resp *http.Response
 	var err error
 	for attempt := range maxRetries {
+		// Clone per attempt. A RoundTripper must not modify the request it is
+		// given, and the original's Body was consumed above; CachingTransport
+		// already follows the same rule.
+		attemptReq := req.Clone(req.Context())
 		if body != nil {
-			req.Body = io.NopCloser(bytes.NewReader(body))
+			attemptReq.Body = io.NopCloser(bytes.NewReader(body))
 		}
 
-		resp, err = t.base().RoundTrip(req)
-		if !t.shouldRetry(resp, err) || attempt == maxRetries-1 {
+		resp, err = t.base().RoundTrip(attemptReq)
+		if !shouldRetry(attemptReq, resp, err) || attempt == maxRetries-1 {
 			return resp, err
 		}
+
+		// Computed before draining, so the response is still intact if the
+		// wait turns out to be too long to sit through.
+		wait := retryDelay(resp, attempt, time.Now())
+		if wait > maxRetryWait {
+			return resp, err
+		}
+
 		if resp != nil {
 			// Drain so the connection can be reused.
 			_, _ = io.Copy(io.Discard, resp.Body)
 			_ = resp.Body.Close()
 		}
 
-		select {
-		case <-req.Context().Done():
-			return nil, req.Context().Err()
-		default:
+		if sleepErr := t.sleep(req.Context(), wait); sleepErr != nil {
+			return nil, sleepErr
 		}
-		t.sleep(backoff(attempt))
 	}
 	return resp, err
 }
 
 // shouldRetry retries transport errors, 5xx and 429. A 4xx other than 429 is a
 // client mistake and retrying it just burns rate limit.
-func (t *RetryTransport) shouldRetry(resp *http.Response, err error) bool {
+//
+// Only idempotent methods are replayed. flow issues nothing but GETs today, so
+// this changes no current behaviour; it stops a future POST from being silently
+// submitted twice because its response happened to be a 502.
+func shouldRetry(req *http.Request, resp *http.Response, err error) bool {
+	switch req.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+	default:
+		return false
+	}
 	if err != nil {
 		return true
 	}
@@ -85,12 +113,66 @@ func (t *RetryTransport) base() http.RoundTripper {
 	return http.DefaultTransport
 }
 
-func (t *RetryTransport) sleep(d time.Duration) {
+// sleep waits between attempts, returning early if the request's context is
+// cancelled. Checking the context only before the sleep left a Ctrl-C sitting
+// through the whole backoff.
+func (t *RetryTransport) sleep(ctx context.Context, d time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if t.Sleep != nil {
 		t.Sleep(d)
-		return
+		return ctx.Err()
 	}
-	time.Sleep(d)
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// retryDelay prefers the server's own guidance to a guess. GitHub sends
+// Retry-After on a secondary rate limit and X-RateLimit-Reset once the primary
+// quota is spent; ignoring both and coming back 500ms later is exactly what
+// earns a longer block.
+func retryDelay(resp *http.Response, attempt int, now time.Time) time.Duration {
+	if resp != nil {
+		if d, ok := retryAfter(resp.Header, now); ok {
+			return d
+		}
+	}
+	return backoff(attempt)
+}
+
+// retryAfter reads Retry-After (delta-seconds or an HTTP-date), then
+// X-RateLimit-Reset when the remaining quota is actually zero.
+func retryAfter(h http.Header, now time.Time) (time.Duration, bool) {
+	if v := strings.TrimSpace(h.Get("Retry-After")); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil {
+			return atLeastZero(time.Duration(secs) * time.Second), true
+		}
+		if when, err := http.ParseTime(v); err == nil {
+			return atLeastZero(when.Sub(now)), true
+		}
+	}
+	if h.Get("X-RateLimit-Remaining") == "0" {
+		if v := strings.TrimSpace(h.Get("X-RateLimit-Reset")); v != "" {
+			if epoch, err := strconv.ParseInt(v, 10, 64); err == nil {
+				return atLeastZero(time.Unix(epoch, 0).Sub(now)), true
+			}
+		}
+	}
+	return 0, false
+}
+
+func atLeastZero(d time.Duration) time.Duration {
+	if d < 0 {
+		return 0
+	}
+	return d
 }
 
 func backoff(attempt int) time.Duration {

@@ -109,9 +109,14 @@ identifier comes out mangled — `RD-99999 is not registered` renders as
 - **`flow init` is idempotent and adoptive.** It adopts an existing worktree
   untouched, focuses rather than duplicates a workspace, and refuses in exactly
   one case: a non-empty directory that is not a git worktree.
-- **The `clusters` config map is the allowlist.** `flow` refuses to act on a
-  kube context with no entry. To target a different cluster, pass
-  `--kube-context` to helm; never mutate the user's kubeconfig.
+- **The `clusters` config map is learn-on-first-use, not a closed allowlist.**
+  An unknown kube context is never acted on silently, but interactively
+  `learnCluster` prompts for the settings and writes the entry, so any context
+  can be adopted. Only a non-interactive session refuses outright. Per-invocation
+  overrides (`--release`, `--namespace`, `--helm-repo`, `--chart`) are applied
+  *after* the entry is resolved, so they cannot stand in for one. To target a
+  different cluster, pass `--kube-context` to helm; never mutate the user's
+  kubeconfig.
 - **Chart versions order by trailing run ID, never by semver.** Semver compares
   the pre-release suffix alphanumerically and sorts `…-9` above `…-10`.
 - **A `skipped` CI job counts as satisfied.** The GPU and FIPS legs are always

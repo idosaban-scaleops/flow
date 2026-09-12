@@ -165,7 +165,7 @@ func (a *App) runInit(ctx context.Context, args []string, opts initOptions) erro
 	}
 
 	// 7. The worktree itself, with adoption.
-	adoptedFrom, err := a.ensureWorktree(ctx, git, readGit, &result, n, remote, base, opts)
+	adoptedFrom, err := a.ensureWorktree(ctx, git, readGit, &result, remote, base, opts)
 	if err != nil {
 		return err
 	}
@@ -274,7 +274,7 @@ func (a *App) fetch(ctx context.Context, git *gitx.Git, remote, base string, res
 // ensureWorktree creates or adopts the worktree, and reports what it adopted.
 func (a *App) ensureWorktree(
 	ctx context.Context, git, readGit *gitx.Git, result *initResult,
-	n names, remote, base string, opts initOptions,
+	remote, base string, opts initOptions,
 ) (adoptedFrom string, err error) {
 	path := result.Entry.WorktreePath
 
@@ -334,7 +334,7 @@ func (a *App) ensureWorktree(
 			"git cannot check it out twice", result.Entry.Branch, other.Path)
 	}
 
-	if err := a.createWorktree(ctx, git, readGit, result, n, remote, base); err != nil {
+	if err := a.createWorktree(ctx, git, readGit, result, remote, base); err != nil {
 		return "", err
 	}
 	result.Created.Worktree = true
@@ -344,10 +344,9 @@ func (a *App) ensureWorktree(
 // createWorktree mirrors git-wt's branch-resolution ladder.
 func (a *App) createWorktree(
 	ctx context.Context, git, readGit *gitx.Git, result *initResult,
-	n names, remote, base string,
+	remote, base string,
 ) error {
 	branch, path := result.Entry.Branch, result.Entry.WorktreePath
-	_ = n
 
 	switch {
 	case readGit.LocalBranchExists(ctx, branch):
@@ -411,12 +410,15 @@ func (a *App) ensureWorkspace(ctx context.Context, result *initResult, n names, 
 
 	list, err := readClient.ListWorkspaces(ctx)
 	if err != nil {
-		// herdr not running is not a reason to fail init.
-		a.Out.Warn("could not list herdr workspaces: %v", err)
+		// herdr not running is not a reason to fail init — but it is a reason
+		// not to create. Falling through left list nil, and FindByID and
+		// FindByLabel both report a plain false on a nil slice rather than a
+		// sentinel, so both lookups missed and a ticket that already had a
+		// workspace got a second one. prune.listWorkspaces suppresses its
+		// actions on the same failure; init suppresses the create.
+		a.Out.Warn("could not list herdr workspaces, so not creating one: %v", err)
 		result.Warnings = append(result.Warnings, err.Error())
-		if adoptOnly {
-			return
-		}
+		return
 	}
 
 	if ws, ok := herdr.FindByID(list, result.Entry.Workspace.ID); ok {

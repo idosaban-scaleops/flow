@@ -7,7 +7,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 
@@ -55,6 +57,17 @@ type App struct {
 	// baseRunner is the unwrapped runner, for read-only work that must still
 	// happen under --dry-run.
 	baseRunner flowexec.Runner
+
+	// The token and the GitHub client are resolved once per invocation.
+	// `flow delete --all` and `flow list` ask for them once per ticket, and
+	// each miss used to mean another `security find-generic-password` spawn
+	// and a fresh HTTP client — which also threw away the ETag cache that
+	// makes the polling loop cheap.
+	tokenOnce   sync.Once
+	tokenValue  string
+	tokenSource secrets.Source
+	githubOnce  sync.Once
+	githubValue *ghapi.Client
 }
 
 // Config returns the effective configuration.
@@ -85,24 +98,32 @@ func (a *App) ReadGit(dir string) *gitx.Git { return gitx.New(a.baseRunner, dir)
 // config, or the macOS keychain. A missing token is not an error: the returned
 // client reports Unknown for everything it cannot determine.
 func (a *App) GitHub(ctx context.Context) *ghapi.Client {
-	token, _ := a.Token(ctx)
-	return ghapi.New(ctx, ghapi.Options{
-		APIBase:   a.cfg.GitHub.APIBase,
-		Token:     token,
-		UserAgent: "flow/" + Version,
+	a.githubOnce.Do(func() {
+		token, _ := a.Token(ctx)
+		// ghapi.New does not retain ctx — every request carries its own — so
+		// one client is reusable for the whole invocation.
+		a.githubValue = ghapi.New(ctx, ghapi.Options{
+			APIBase:   a.cfg.GitHub.APIBase,
+			Token:     token,
+			UserAgent: "flow/" + Version,
+		})
 	})
+	return a.githubValue
 }
 
 // Token resolves the GitHub token and reports where it came from. The value is
 // never logged; only the source is ever displayed.
 func (a *App) Token(ctx context.Context) (string, secrets.Source) {
-	r := &secrets.Resolver{
-		Runner:          a.baseRunner,
-		Getenv:          os.Getenv,
-		KeychainService: a.cfg.GitHub.TokenKeychainService,
-		ConfigToken:     a.cfg.GitHub.Token,
-	}
-	return r.Token(ctx)
+	a.tokenOnce.Do(func() {
+		r := &secrets.Resolver{
+			Runner:          a.baseRunner,
+			Getenv:          os.Getenv,
+			KeychainService: a.cfg.GitHub.TokenKeychainService,
+			ConfigToken:     a.cfg.GitHub.Token,
+		}
+		a.tokenValue, a.tokenSource = r.Token(ctx)
+	})
+	return a.tokenValue, a.tokenSource
 }
 
 // Herdr returns the workspace client, or nil when the provider is "none".
@@ -298,14 +319,28 @@ func (a *App) setup(cmd *cobra.Command, _ []string) error {
 // mutatingGitVerbs are the git subcommands that change the repository. Under
 // --dry-run everything else still runs, because a dry run that cannot inspect
 // the repository cannot describe what it would do.
-var mutatingGitVerbs = map[string]bool{
-	"worktree": true, "branch": true, "fetch": true, "push": true,
-	"checkout": true, "switch": true, "commit": true, "add": true,
-	"reset": true, "merge": true, "rebase": true, "tag": true, "clean": true,
+//
+// This is a denylist, which is the wrong shape for a safety check: a verb added
+// later that is not named here executes under --dry-run instead of being
+// announced. It stays a denylist anyway, because the obvious inversion is
+// worse. Many git verbs are read-only in one form and mutating in another —
+// `remote get-url`, `config --get` and `stash list` are all reads flow either
+// makes today or plausibly would — so an allowlist of read verbs turns every
+// omission into a dry run that cannot inspect the repository, and a dry run
+// that cannot inspect cannot describe what it would do.
+//
+// What keeps it honest is auditing the call sites, which are all in
+// internal/gitx: today they are rev-parse, remote get-url, show-ref,
+// for-each-ref, branch, status, rev-list, log, fetch and worktree. When adding
+// a git call, decide which side of this list it is on.
+var mutatingGitVerbs = []string{
+	"worktree", "branch", "fetch", "push",
+	"checkout", "switch", "commit", "add",
+	"reset", "merge", "rebase", "tag", "clean",
 }
 
 // readOnlyGitWorktreeVerbs are the `git worktree` subcommands that only read.
-var readOnlyGitWorktreeVerbs = map[string]bool{"list": true}
+var readOnlyGitWorktreeVerbs = []string{"list"}
 
 func isReadOnlyCommand(opts flowexec.Opts) bool {
 	if len(opts.Args) == 0 {
@@ -313,16 +348,23 @@ func isReadOnlyCommand(opts flowexec.Opts) bool {
 	}
 	verb := opts.Args[0]
 
+	// A bare capability probe reads nothing and mutates nothing. Without this
+	// `herdr --version` classifies as mutating, and doctor would report an
+	// empty version string under --dry-run.
+	if len(opts.Args) == 1 && (verb == "--version" || verb == "-version") {
+		return true
+	}
+
 	switch opts.Name {
 	case "git":
-		if verb == "worktree" && len(opts.Args) > 1 && readOnlyGitWorktreeVerbs[opts.Args[1]] {
+		if verb == "worktree" && len(opts.Args) > 1 && slices.Contains(readOnlyGitWorktreeVerbs, opts.Args[1]) {
 			return true
 		}
 		// `git branch` with no mutating flag only lists.
-		if verb == "branch" && !hasAny(opts.Args, "-d", "-D", "-m", "-M", "-c", "-C") {
+		if verb == "branch" && !containsAny(opts.Args, "-d", "-D", "-m", "-M", "-c", "-C") {
 			return true
 		}
-		return !mutatingGitVerbs[verb]
+		return !slices.Contains(mutatingGitVerbs, verb)
 	case "helm":
 		switch verb {
 		case "list", "status", "history", "get", "search", "version", "show":
@@ -334,15 +376,24 @@ func isReadOnlyCommand(opts flowexec.Opts) bool {
 		}
 	case "kubectl":
 		switch verb {
-		case "get", "config", "version", "describe":
+		case "get", "version", "describe":
 			return true
+		case "config":
+			// `kubectl config` is not read-only as a family: use-context,
+			// set-context and friends rewrite the user's kubeconfig, which
+			// flow must never do. Name the subcommands flow actually
+			// issues instead of waving the whole verb through.
+			return len(opts.Args) > 1 &&
+				slices.Contains([]string{"view", "current-context", "get-contexts"}, opts.Args[1])
 		default:
 			return false
 		}
 	case "herdr":
 		return len(opts.Args) > 1 && opts.Args[1] == "list"
 	case "security":
-		return true
+		// flow only ever runs `security find-generic-password`, a read. Anything
+		// else reaching here would be a new call site that needs classifying.
+		return len(opts.Args) > 0 && opts.Args[0] == "find-generic-password"
 	case "open":
 		return false
 	default:
@@ -350,15 +401,8 @@ func isReadOnlyCommand(opts flowexec.Opts) bool {
 	}
 }
 
-func hasAny(args []string, wanted ...string) bool {
-	for _, a := range args {
-		for _, w := range wanted {
-			if a == w {
-				return true
-			}
-		}
-	}
-	return false
+func containsAny(args []string, wanted ...string) bool {
+	return slices.ContainsFunc(args, func(a string) bool { return slices.Contains(wanted, a) })
 }
 
 // run wraps a command body so that errors are rendered once, in the right

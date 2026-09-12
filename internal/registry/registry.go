@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 )
@@ -49,15 +49,13 @@ type Entry struct {
 	Extra map[string]json.RawMessage `json:"-"`
 }
 
-// Key identifies an entry. The same ticket ID may exist in two repositories,
-// so the repo key is part of the identity.
-type Key struct {
-	RepoKey  string
-	TicketID string
+// sameEntry reports whether an entry identifies the given repo and ticket.
+// Ticket IDs compare case-insensitively: a registry holding "rd-1" must be
+// updated by an Upsert of "RD-1" rather than growing a duplicate. Find, Remove
+// and Upsert all route through this so they cannot drift apart again.
+func sameEntry(e Entry, repoKey, ticketID string) bool {
+	return e.RepoKey == repoKey && strings.EqualFold(e.TicketID, ticketID)
 }
-
-// Key returns the entry's identity.
-func (e Entry) Key() Key { return Key{RepoKey: e.RepoKey, TicketID: e.TicketID} }
 
 // File is the whole registry document.
 type File struct {
@@ -68,7 +66,7 @@ type File struct {
 // Find returns the entry for a repo and ticket.
 func (f *File) Find(repoKey, ticketID string) (Entry, bool) {
 	for _, e := range f.Entries {
-		if e.RepoKey == repoKey && strings.EqualFold(e.TicketID, ticketID) {
+		if sameEntry(e, repoKey, ticketID) {
 			return e, true
 		}
 	}
@@ -114,11 +112,12 @@ func (f *File) All() []Entry {
 }
 
 func sortEntries(es []Entry) {
-	sort.SliceStable(es, func(i, j int) bool {
-		if es[i].CreatedAt.Equal(es[j].CreatedAt) {
-			return es[i].TicketID < es[j].TicketID
+	slices.SortStableFunc(es, func(a, b Entry) int {
+		if a.CreatedAt.Equal(b.CreatedAt) {
+			return strings.Compare(a.TicketID, b.TicketID)
 		}
-		return es[i].CreatedAt.After(es[j].CreatedAt)
+		// Newest first.
+		return b.CreatedAt.Compare(a.CreatedAt)
 	})
 }
 
@@ -126,7 +125,7 @@ func sortEntries(es []Entry) {
 // one already existed.
 func (f *File) Upsert(e Entry) {
 	for i, existing := range f.Entries {
-		if existing.Key() == e.Key() {
+		if sameEntry(existing, e.RepoKey, e.TicketID) {
 			if e.CreatedAt.IsZero() {
 				e.CreatedAt = existing.CreatedAt
 			}
@@ -146,7 +145,7 @@ func (f *File) Upsert(e Entry) {
 // Remove deletes an entry and reports whether it was present.
 func (f *File) Remove(repoKey, ticketID string) bool {
 	for i, e := range f.Entries {
-		if e.RepoKey == repoKey && strings.EqualFold(e.TicketID, ticketID) {
+		if sameEntry(e, repoKey, ticketID) {
 			f.Entries = append(f.Entries[:i], f.Entries[i+1:]...)
 			return true
 		}

@@ -227,8 +227,12 @@ func (a *App) describePR(p statusPayload, got resolved) string {
 		}
 		return t.Success.Render(fmt.Sprintf("#%d merged%s", p.PR.Number, merged)) + "  " +
 			t.Path.Render(p.PR.URL)
-	default:
+	case ghapi.PROpen, ghapi.PRClosed:
 		return fmt.Sprintf("#%d %s", p.PR.Number, p.PR.State) + "  " + t.Path.Render(p.PR.URL)
+	default:
+		// A state this build does not know about renders like PRUnknown rather
+		// than like "none".
+		return t.Warn.Render(fmt.Sprintf("unknown (%s)", p.PR.State))
 	}
 }
 

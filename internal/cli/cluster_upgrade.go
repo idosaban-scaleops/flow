@@ -210,8 +210,9 @@ func (a *App) upgradeTargetBranch(ctx context.Context, args []string, opts upgra
 	return r, got.Entry.Branch, got.Entry.TicketID, nil
 }
 
-// confirmContext enforces the allowlist: a clusters entry is what makes a
-// context safe to act on, and an override needs explicit confirmation.
+// confirmContext gates an explicit --context override behind a destructive
+// confirmation: acting on a cluster other than the ambient current one is
+// never something flow does without being asked twice.
 func (a *App) confirmContext(target clusterTarget) error {
 	if !target.Overridden {
 		return nil
@@ -262,17 +263,12 @@ func (a *App) buildUpgrade(target clusterTarget, version string, opts upgradeOpt
 		extra = replaceValuesFlag(extra, "--reset-values")
 	}
 
-	kubeContext := ""
-	if target.Overridden {
-		kubeContext = target.Context
-	}
-
 	return helmx.UpgradeOptions{
 		Release:     settings.ReleaseName,
 		Chart:       settings.Chart,
 		Namespace:   settings.Namespace,
 		Version:     version,
-		KubeContext: kubeContext,
+		KubeContext: target.kubeContextArg(),
 		ValuesFiles: valuesFiles,
 		SetValues:   opts.sets,
 		ExtraArgs:   extra,
@@ -324,11 +320,8 @@ func (a *App) offerServerSideDryRun(ctx context.Context, upgrade helmx.UpgradeOp
 }
 
 func (a *App) reportRevision(ctx context.Context, target clusterTarget) {
-	kubeContext := ""
-	if target.Overridden {
-		kubeContext = target.Context
-	}
-	rel, err := a.ReadHelm().Status(ctx, target.Settings.ReleaseName, target.Settings.Namespace, kubeContext)
+	rel, err := a.ReadHelm().Status(ctx,
+		target.Settings.ReleaseName, target.Settings.Namespace, target.kubeContextArg())
 	if err != nil {
 		a.Out.Success("helm upgrade completed")
 		return

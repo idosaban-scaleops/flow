@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"strings"
 	"testing"
 	"time"
+
+	flowexec "github.com/idosaban-scaleops/flow/internal/exec"
 )
 
 func durationSeconds(n int) time.Duration { return time.Duration(n) * time.Second }
@@ -161,6 +164,123 @@ func TestHumanAge(t *testing.T) {
 		t.Run(tt.want, func(t *testing.T) {
 			if got := humanAge(durationSeconds(tt.seconds)); got != tt.want {
 				t.Errorf("humanAge(%ds) = %q, want %q", tt.seconds, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestKubeContextIsAlwaysPassedToHelm pins the rule that the command flow
+// prints and the command flow runs name the same cluster. Sending
+// --kube-context only for an override left helm to re-resolve the context
+// itself, so a `kubectl config use-context` between the confirmation prompt
+// and the upgrade redirected it to a different cluster.
+func TestKubeContextIsAlwaysPassedToHelm(t *testing.T) {
+	tests := []struct {
+		name   string
+		target clusterTarget
+		want   string
+	}{
+		{
+			name:   "ambient current context",
+			target: clusterTarget{Context: "dev", Overridden: false},
+			want:   "dev",
+		},
+		{
+			name:   "explicit --context override",
+			target: clusterTarget{Context: "other", Overridden: true},
+			want:   "other",
+		},
+		{
+			name:   "no context resolved at all",
+			target: clusterTarget{},
+			want:   "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.target.kubeContextArg(); got != tt.want {
+				t.Errorf("kubeContextArg() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestDryRunClassifiesEveryGitCallSite audits isReadOnlyCommand against the
+// argv internal/gitx actually produces. mutatingGitVerbs is a denylist, so the
+// risk is a read being misclassified as a write (dry-run then cannot inspect)
+// or a write slipping through as a read (dry-run then mutates).
+func TestDryRunClassifiesEveryGitCallSite(t *testing.T) {
+	tests := []struct {
+		args     []string
+		wantRead bool
+	}{
+		// Reads: a dry run must still be able to make these.
+		{[]string{"rev-parse", "--path-format=absolute", "--git-common-dir"}, true},
+		{[]string{"rev-parse", "--abbrev-ref", "HEAD"}, true},
+		{[]string{"remote", "get-url", "origin"}, true},
+		{[]string{"show-ref", "--verify", "--quiet", "refs/heads/RD-1"}, true},
+		{[]string{"for-each-ref", "--sort=-creatordate", "--count", "1"}, true},
+		{[]string{"branch", "--merged", "origin/main", "--format=%(refname:short)"}, true},
+		{[]string{"status", "--porcelain"}, true},
+		{[]string{"rev-list", "--left-right", "--count", "@{upstream}...HEAD"}, true},
+		{[]string{"log", "--format=%h %s", "origin/main..RD-1"}, true},
+		{[]string{"worktree", "list", "--porcelain"}, true},
+
+		// Writes: a dry run must announce and skip these.
+		{[]string{"fetch", "--tags", "origin"}, false},
+		{[]string{"branch", "-d", "RD-1"}, false},
+		{[]string{"branch", "-D", "RD-1"}, false},
+		{[]string{"worktree", "add", "/wt", "RD-1"}, false},
+		{[]string{"worktree", "add", "--track", "-b", "RD-1", "/wt", "origin/RD-1"}, false},
+		{[]string{"worktree", "prune"}, false},
+		{[]string{"worktree", "remove", "/wt"}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
+			got := isReadOnlyCommand(flowexec.Opts{Name: "git", Args: tt.args})
+			if got != tt.wantRead {
+				verb := "mutating"
+				if tt.wantRead {
+					verb = "read-only"
+				}
+				t.Errorf("isReadOnlyCommand = %v, want %v (this call is %v)", got, tt.wantRead, verb)
+			}
+		})
+	}
+}
+
+// TestDryRunClassifiesNonGitTools covers the other binaries flow drives.
+func TestDryRunClassifiesNonGitTools(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		wantRead bool
+	}{
+		{"kubectl", []string{"config", "current-context"}, true},
+		{"kubectl", []string{"config", "view", "-o", "json"}, true},
+		{"kubectl", []string{"config", "get-contexts", "-o", "name"}, true},
+		// flow never issues this, and it would rewrite the user's kubeconfig.
+		{"kubectl", []string{"config", "use-context", "prod"}, false},
+		{"kubectl", []string{"get", "pods"}, true},
+		{"helm", []string{"status", "scaleops"}, true},
+		{"helm", []string{"repo", "list"}, true},
+		{"helm", []string{"repo", "update"}, false},
+		{"helm", []string{"upgrade", "scaleops", "scaleops/scaleops"}, false},
+		{"helm", []string{"uninstall", "scaleops"}, false},
+		{"herdr", []string{"workspace", "list"}, true},
+		{"herdr", []string{"workspace", "create"}, false},
+		{"herdr", []string{"--version"}, true},
+		{"security", []string{"find-generic-password", "-s", "svc", "-w"}, true},
+		{"open", []string{"https://example.com"}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name+" "+strings.Join(tt.args, " "), func(t *testing.T) {
+			got := isReadOnlyCommand(flowexec.Opts{Name: tt.name, Args: tt.args})
+			if got != tt.wantRead {
+				t.Errorf("isReadOnlyCommand = %v, want %v", got, tt.wantRead)
 			}
 		})
 	}

@@ -39,6 +39,8 @@ func (p Phase) String() string {
 		return "failed"
 	case PhaseCancelled:
 		return "cancelled"
+	case PhaseWaiting:
+		return "waiting"
 	default:
 		return "waiting"
 	}
@@ -109,13 +111,14 @@ func (m *Machine) Update(jobs []ghapi.Job) State {
 	if len(matched) == 0 {
 		// CI has not created the gating jobs yet. Report no progress rather
 		// than claiming completion of an empty set.
-		state.Percent = m.clamp(0)
+		state.Percent = m.advanceTo(0)
 		return state
 	}
 
 	share := 1.0 / float64(len(matched))
 	var progress float64
 	allDone := true
+	anyCancelled := false
 
 	for _, job := range matched {
 		view := describe(job)
@@ -138,23 +141,35 @@ func (m *Machine) Update(jobs []ghapi.Job) State {
 			state.FailedStep = failedStepName(job)
 			state.FailedURL = job.HTMLURL
 		}
-		if job.Conclusion == ghapi.ConclusionCancelled && state.Phase == PhaseWaiting {
-			state.Phase = PhaseCancelled
+		if job.Conclusion == ghapi.ConclusionCancelled {
+			anyCancelled = true
 		}
 	}
 
-	state.Percent = m.clamp(progress)
+	state.Percent = m.advanceTo(progress)
 
+	// Cancellation is decided only once the whole gating set has stopped.
+	// A single cancelled matrix leg is not a cancelled run: reacting to it
+	// immediately triggered a retarget, which ended the wait with ErrCancelled
+	// whenever no newer run existed — while the run's other legs were still
+	// happily building. When cancel-in-progress really does cancel the run,
+	// every unfinished job is cancelled with it, so this still fires.
 	if state.Phase == PhaseWaiting && allDone {
-		state.Phase = PhaseSucceeded
-		// A finished set is 100% regardless of step accounting.
-		state.Percent = m.clamp(1)
+		if anyCancelled {
+			state.Phase = PhaseCancelled
+		} else {
+			state.Phase = PhaseSucceeded
+			// A finished set is 100% regardless of step accounting.
+			state.Percent = m.advanceTo(1)
+		}
 	}
 	return state
 }
 
-// clamp enforces monotonicity and keeps the value in [0, 1].
-func (m *Machine) clamp(p float64) float64 {
+// advanceTo enforces monotonicity and keeps the value in [0, 1]. It is named
+// for the fact that it advances state: it records the new high-water mark in
+// m.maxPercent, so it is not the pure helper a name like "clamp" suggests.
+func (m *Machine) advanceTo(p float64) float64 {
 	switch {
 	case p < 0:
 		p = 0
@@ -196,11 +211,17 @@ func (m *Machine) match(jobs []ghapi.Job) []ghapi.Job {
 
 // matchesTarget reports whether a job name matches a gating pattern, by exact
 // match or by the "{target} / {inner job}" nesting a reusable workflow produces.
+//
+// The separator is required. A bare HasPrefix widened the gate to every job
+// whose name merely starts with the target — target "Test" also matched "Test
+// Coverage Report" and "Tests-e2e" — so the wait blocked on jobs it was never
+// meant to watch. This is the same boundary rule registry.underPath applies to
+// path prefixes.
 func matchesTarget(name, target string) bool {
 	if name == target {
 		return true
 	}
-	return strings.HasPrefix(name, target)
+	return strings.HasPrefix(name, target+" / ")
 }
 
 // stepFraction is how far through its own step list a running job is. Total
@@ -280,6 +301,10 @@ func failedStepName(job ghapi.Job) string {
 		switch s.Conclusion {
 		case ghapi.ConclusionFailure, ghapi.ConclusionTimedOut:
 			return s.Name
+		case ghapi.ConclusionSuccess, ghapi.ConclusionSkipped,
+			ghapi.ConclusionCancelled, ghapi.ConclusionNeutral, ghapi.ConclusionNone:
+			// Not what broke the job.
+		default:
 		}
 	}
 	return ""

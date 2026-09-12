@@ -88,16 +88,22 @@ func ExitCodeFor(err error) int {
 		return ExitOK
 	}
 
+	// Cancellation is checked before *Error. A Ctrl-C during `helm upgrade`
+	// surfaces as context.Canceled wrapped in Wrap(ExitDependency,
+	// "helm_failed", …), and the outer code would otherwise win and report a
+	// dependency failure for what the user did deliberately. Aborted() already
+	// looks through the whole chain, so the two must agree.
+	if Aborted(err) {
+		return ExitAborted
+	}
+
 	var flowErr *Error
 	if errors.As(err, &flowErr) {
 		return flowErr.Code
 	}
 
 	var notInteractive *output.ErrNotInteractive
-	switch {
-	case errors.Is(err, output.ErrAborted), errors.Is(err, context.Canceled):
-		return ExitAborted
-	case errors.As(err, &notInteractive):
+	if errors.As(err, &notInteractive) {
 		return ExitPrecondition
 	}
 
@@ -126,6 +132,12 @@ func ExitCodeFor(err error) int {
 
 // KindFor maps an error to the machine-readable code used in JSON output.
 func KindFor(err error) string {
+	// Same ordering as ExitCodeFor: an aborted action must not report the
+	// wrapping layer's kind ("helm_failed") alongside exit code 6.
+	if Aborted(err) {
+		return "aborted"
+	}
+
 	var flowErr *Error
 	if errors.As(err, &flowErr) && flowErr.Kind != "" {
 		return flowErr.Kind

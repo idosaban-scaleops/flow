@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/idosaban-scaleops/flow/internal/config"
 )
 
 // Worktree is one entry from `git worktree list --porcelain`.
@@ -174,7 +176,10 @@ func EnsureExcluded(commonDir, line string) (added bool, err error) {
 	}
 	body += line + "\n"
 
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil { //nolint:gosec // matches git
+	// Atomic: a read-whole/write-whole with os.WriteFile truncates the file
+	// first, so a crash mid-write would leave the repository with a shortened
+	// or empty info/exclude.
+	if err := config.WriteFileAtomic(path, []byte(body), 0o644); err != nil {
 		return false, fmt.Errorf("write %s: %w", path, err)
 	}
 	return true, nil

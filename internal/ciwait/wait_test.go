@@ -149,6 +149,36 @@ func TestAdaptivePollInterval(t *testing.T) {
 	}
 }
 
+// TestExplicitPollIntervalIsHonored covers the case where the user widens the
+// interval on purpose. The adaptive rate used to replace it with the 5s floor
+// as soon as any job started, spending exactly the quota the flag was passed
+// to conserve.
+func TestExplicitPollIntervalIsHonored(t *testing.T) {
+	w := ciwait.NewWaiter(&fakeAPI{}, ciwait.Options{
+		PollInterval:    30 * time.Second,
+		PollIntervalSet: true,
+	})
+
+	running := ciwait.State{Jobs: []ciwait.JobView{{Status: ghapi.StatusInProgress}}}
+	if got := ciwait.IntervalForTest(w, running); got != 30*time.Second {
+		t.Errorf("with work in progress the interval is %v, want the requested 30s", got)
+	}
+
+	queued := ciwait.State{Jobs: []ciwait.JobView{{Status: ghapi.StatusQueued}}}
+	if got := ciwait.IntervalForTest(w, queued); got != 30*time.Second {
+		t.Errorf("with everything queued the interval is %v, want 30s", got)
+	}
+
+	// A narrow explicit value still lets the adaptive rate slow things down.
+	narrow := ciwait.NewWaiter(&fakeAPI{}, ciwait.Options{
+		PollInterval:    ciwait.MinPollInterval,
+		PollIntervalSet: true,
+	})
+	if got := ciwait.IntervalForTest(narrow, queued); got != ciwait.QueuedPollInterval {
+		t.Errorf("queued interval = %v, want %v", got, ciwait.QueuedPollInterval)
+	}
+}
+
 func TestPollIntervalNeverGoesBelowTheFloor(t *testing.T) {
 	w := ciwait.NewWaiter(&fakeAPI{}, ciwait.Options{PollInterval: time.Millisecond})
 	if got := ciwait.IntervalForTest(w, ciwait.State{}); got < ciwait.MinPollInterval {

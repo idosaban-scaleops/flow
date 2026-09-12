@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -22,7 +23,10 @@ type pruneAction struct {
 	Detail string `json:"detail"`
 	// Prompt is the question asked before applying it.
 	Prompt string `json:"-"`
-	apply  func() error
+	// mutation describes the registry write in the imperative, for the
+	// "would ..." line app.mutate prints under --dry-run.
+	mutation string
+	apply    func() error
 }
 
 func newPruneCommand(app *App) *cobra.Command {
@@ -61,7 +65,13 @@ Nothing here removes a worktree, a branch, or an assets directory.`),
 
 		if app.JSON() {
 			payload := map[string]any{"actions": actions}
-			if app.Yes() {
+			switch {
+			case app.DryRun():
+				// --dry-run writes nothing, --yes or not. Say so in the
+				// payload rather than reporting "applied": 0, which reads
+				// like every action failed.
+				payload["dry_run"] = true
+			case app.Yes():
 				applied, failures := app.applyPrune(actions, true)
 				payload["applied"] = applied
 				payload["failed"] = failures
@@ -106,18 +116,19 @@ func (a *App) planPrune(ctx context.Context, repo gitx.Repo, file *registry.File
 	var actions []pruneAction
 
 	knownWorkspaces := a.listWorkspaces(ctx)
-	registered := map[string]bool{}
+	var registered []string
 
 	for _, entry := range file.ForRepo(repo.Key) {
-		registered[filepath.Clean(entry.WorktreePath)] = true
+		registered = append(registered, entry.WorktreePath)
 
 		if !worktreeExists(entry.WorktreePath) {
 			actions = append(actions, pruneAction{
-				Kind:   "drop-entry",
-				Ticket: entry.TicketID,
-				Detail: fmt.Sprintf("worktree %s is gone — drop the registry entry", entry.WorktreePath),
-				Prompt: fmt.Sprintf("Drop the registry entry for %s?", entry.TicketID),
-				apply:  a.dropEntry(entry),
+				Kind:     "drop-entry",
+				Ticket:   entry.TicketID,
+				Detail:   fmt.Sprintf("worktree %s is gone — drop the registry entry", entry.WorktreePath),
+				Prompt:   fmt.Sprintf("Drop the registry entry for %s?", entry.TicketID),
+				mutation: fmt.Sprintf("drop the registry entry for %s", entry.TicketID),
+				apply:    a.dropEntry(entry),
 			})
 			continue
 		}
@@ -133,8 +144,9 @@ func (a *App) planPrune(ctx context.Context, repo gitx.Repo, file *registry.File
 				Ticket: entry.TicketID,
 				Detail: fmt.Sprintf("herdr no longer knows workspace %q — clear it",
 					orDash(entry.Workspace.Label, entry.Workspace.ID)),
-				Prompt: fmt.Sprintf("Clear the recorded workspace for %s?", entry.TicketID),
-				apply:  a.clearWorkspace(entry),
+				Prompt:   fmt.Sprintf("Clear the recorded workspace for %s?", entry.TicketID),
+				mutation: fmt.Sprintf("clear the recorded workspace for %s", entry.TicketID),
+				apply:    a.clearWorkspace(entry),
 			})
 		}
 	}
@@ -145,7 +157,7 @@ func (a *App) planPrune(ctx context.Context, repo gitx.Repo, file *registry.File
 
 // planAdoptions finds worktrees matching the ticket naming pattern that flow
 // has never been told about.
-func (a *App) planAdoptions(repo gitx.Repo, file *registry.File, registered map[string]bool) []pruneAction {
+func (a *App) planAdoptions(repo gitx.Repo, file *registry.File, registered []string) []pruneAction {
 	root := filepath.Join(repo.Root, a.cfg.Naming.WorktreesSubdir)
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -158,7 +170,11 @@ func (a *App) planAdoptions(repo gitx.Repo, file *registry.File, registered map[
 			continue
 		}
 		path := filepath.Join(root, dirEntry.Name())
-		if registered[filepath.Clean(path)] {
+		// gitx.SamePath, not a filepath.Clean map key: macOS resolves /tmp and
+		// /var through symlinks and git always reports the resolved form, so
+		// two spellings of the same directory would otherwise look distinct
+		// and prune would propose adopting an already-registered worktree.
+		if slices.ContainsFunc(registered, func(r string) bool { return gitx.SamePath(r, path) }) {
 			continue
 		}
 		tk, ok := ticket.ParseDirName(dirEntry.Name())
@@ -181,11 +197,12 @@ func (a *App) planAdoptions(repo gitx.Repo, file *registry.File, registered map[
 			AssetsPath:   n.AssetsPath,
 		}
 		actions = append(actions, pruneAction{
-			Kind:   "adopt",
-			Ticket: tk.ID,
-			Detail: fmt.Sprintf("unregistered worktree at %s — adopt it", path),
-			Prompt: fmt.Sprintf("Adopt the worktree at %s as %s?", path, tk.ID),
-			apply:  a.adoptEntry(newEntry),
+			Kind:     "adopt",
+			Ticket:   tk.ID,
+			Detail:   fmt.Sprintf("unregistered worktree at %s — adopt it", path),
+			Prompt:   fmt.Sprintf("Adopt the worktree at %s as %s?", path, tk.ID),
+			mutation: fmt.Sprintf("adopt the worktree at %s as %s", path, tk.ID),
+			apply:    a.adoptEntry(newEntry),
 		})
 	}
 	return actions
@@ -245,7 +262,11 @@ func (a *App) applyPrune(actions []pruneAction, assumeYes bool) (applied, failed
 				continue
 			}
 		}
-		if err := action.apply(); err != nil {
+		// Through mutate: these closures call Registry.Update directly rather
+		// than going through exec.Runner, so the dry-run wrapper does not
+		// otherwise reach them. AGENTS.md calls this the easiest rule to
+		// forget, and prune forgot it.
+		if err := a.mutate(action.mutation, action.apply); err != nil {
 			failed++
 			a.Out.Failure("%s: %v", action.Ticket, err)
 			continue

@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,12 +9,22 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/adrg/xdg"
 	"github.com/gofrs/flock"
 
 	"github.com/idosaban-scaleops/flow/internal/config"
 )
+
+// lockTimeout bounds how long Update waits for another flow process to release
+// the registry. A blocking flock.Lock would wedge every other invocation
+// silently and forever behind one hung process; failing with a message that
+// names the lock file gives the user something to act on.
+const lockTimeout = 10 * time.Second
+
+// lockRetryDelay is how often the lock is retried while waiting.
+const lockRetryDelay = 50 * time.Millisecond
 
 // Store reads and writes the registry file, serializing concurrent flow
 // invocations with a lock on a sibling .lock file.
@@ -85,8 +96,18 @@ func (s *Store) Update(fn func(*File) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := s.lock.Lock(); err != nil {
-		return fmt.Errorf("lock registry: %w", err)
+	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
+	defer cancel()
+
+	locked, err := s.lock.TryLockContext(ctx, lockRetryDelay)
+	if err != nil {
+		return fmt.Errorf("lock registry %s: %w", s.lock.Path(), err)
+	}
+	if !locked {
+		return fmt.Errorf(
+			"timed out after %s waiting for the registry lock %s; "+
+				"another flow process may be stuck — remove the file if not",
+			lockTimeout, s.lock.Path())
 	}
 	defer func() { _ = s.lock.Unlock() }()
 

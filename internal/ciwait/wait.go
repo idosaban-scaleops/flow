@@ -4,7 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/idosaban-scaleops/flow/internal/ghapi"
@@ -35,9 +36,14 @@ type Options struct {
 	// WaitForJobs are the gating job-name prefixes.
 	WaitForJobs []string
 
-	PollInterval   time.Duration
-	Timeout        time.Duration
-	IgnoreFailures bool
+	PollInterval time.Duration
+	// PollIntervalSet reports that the user named PollInterval themselves. An
+	// explicit value is a floor: the adaptive rate may still slow polling
+	// down, but it must not speed it past what was asked for. Left false, the
+	// default interval adapts freely in both directions.
+	PollIntervalSet bool
+	Timeout         time.Duration
+	IgnoreFailures  bool
 }
 
 // Target identifies the run currently being watched.
@@ -81,11 +87,30 @@ type Result struct {
 type ErrTimeout struct {
 	Target  Target
 	Elapsed time.Duration
+	// Jobs is the last gating-job snapshot seen before the deadline. A timeout
+	// used to discard it, which loses the view exactly when it matters most:
+	// knowing *which* job was still running is the whole reason to look.
+	Jobs []JobView
 }
 
 func (e *ErrTimeout) Error() string {
-	return fmt.Sprintf("timed out after %s waiting for run %d (%s)",
+	msg := fmt.Sprintf("timed out after %s waiting for run %d (%s)",
 		FormatDuration(e.Elapsed), e.Target.RunID, e.Target.URL)
+	if outstanding := e.Outstanding(); len(outstanding) > 0 {
+		msg += "; still waiting on " + strings.Join(outstanding, ", ")
+	}
+	return msg
+}
+
+// Outstanding names the gating jobs that had not finished.
+func (e *ErrTimeout) Outstanding() []string {
+	var names []string
+	for _, j := range e.Jobs {
+		if j.Status != ghapi.StatusCompleted {
+			names = append(names, j.Name)
+		}
+	}
+	return names
 }
 
 // ErrJobFailed reports a gating job that failed.
@@ -186,7 +211,7 @@ func (w *Waiter) ETA(ctx context.Context, elapsed time.Duration) (time.Duration,
 	if err != nil || len(durations) == 0 {
 		return 0, false
 	}
-	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
+	slices.Sort(durations)
 	median := durations[len(durations)/2]
 	if remaining := median - elapsed; remaining > 0 {
 		return remaining, true
@@ -248,9 +273,14 @@ func (w *Waiter) Run(ctx context.Context, events chan<- Event) (Result, error) {
 	}
 	w.target = target
 
+	var last State
 	for {
 		if w.now().After(deadline) {
-			return Result{}, &ErrTimeout{Target: w.target, Elapsed: w.now().Sub(w.started)}
+			return Result{}, &ErrTimeout{
+				Target:  w.target,
+				Elapsed: w.now().Sub(w.started),
+				Jobs:    last.Jobs,
+			}
 		}
 
 		jobs, err := w.API.ListRunJobs(ctx, w.Opts.Owner, w.Opts.Repo, w.target.RunID)
@@ -270,6 +300,7 @@ func (w *Waiter) Run(ctx context.Context, events chan<- Event) (Result, error) {
 		}
 
 		state := w.machine.Update(jobs)
+		last = state
 		emit(ctx, events, Event{State: &state})
 		w.noteRateLimit(ctx, events)
 
@@ -295,6 +326,9 @@ func (w *Waiter) Run(ctx context.Context, events chan<- Event) (Result, error) {
 				return Result{}, err
 			}
 			continue
+
+		case PhaseWaiting:
+			// Gating jobs are still going; fall through to the next poll.
 		}
 
 		w.checkAttempt(ctx, events)
@@ -398,14 +432,28 @@ func (w *Waiter) interval(state State) time.Duration {
 			running++
 		case ghapi.StatusQueued, ghapi.StatusWaiting, ghapi.StatusPending:
 			queued++
+		case ghapi.StatusCompleted:
+			// Finished jobs neither speed the poll up nor slow it down.
 		}
 	}
 
+	var adaptive time.Duration
 	switch {
 	case running > 0:
-		base = MinPollInterval
+		adaptive = MinPollInterval
 	case queued > 0 && running == 0:
-		base = QueuedPollInterval
+		adaptive = QueuedPollInterval
+	}
+	switch {
+	case adaptive == 0:
+		// Nothing pending; keep the configured interval.
+	case w.Opts.PollIntervalSet:
+		// An explicitly requested interval is a floor. --poll-interval 30s is
+		// usually there to conserve a rate-limit budget, and unconditionally
+		// dropping to the 5s floor spent it anyway.
+		base = max(base, adaptive)
+	default:
+		base = adaptive
 	}
 
 	if base < MinPollInterval {

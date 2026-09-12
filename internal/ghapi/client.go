@@ -138,6 +138,15 @@ func (c *Client) withTimeout(ctx context.Context) (context.Context, context.Canc
 // FindPR returns the newest pull request whose head is branch. A branch with no
 // pull request yields PRNone, not an error — working before opening a PR is the
 // normal case.
+//
+// The head filter is "{owner}:{branch}", so this finds same-repo pull requests
+// only. A PR opened from a fork has a head of "{forkOwner}:{branch}" and reads
+// as PRNone, which makes `flow delete` ask "No pull request found for branch X.
+// Delete anyway?" rather than naming the open PR. That is the intended
+// trade-off for flow's workflow, where branches live in the repository itself;
+// it fails safe, because PRNone still prompts rather than deleting. Matching
+// fork PRs would mean listing without a head filter and comparing Head.Ref,
+// which would also match an unrelated fork that happens to reuse the name.
 func (c *Client) FindPR(ctx context.Context, owner, repo, branch string) (PRInfo, error) {
 	ctx, cancel := c.withTimeout(ctx)
 	defer cancel()

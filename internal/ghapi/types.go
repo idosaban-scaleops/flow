@@ -37,7 +37,11 @@ func (s PRState) String() string {
 		return "merged"
 	case PRClosed:
 		return "closed"
+	case PRUnknown:
+		return "unknown"
 	default:
+		// Any state this build does not recognise is, to it, undeterminable —
+		// never "none".
 		return "unknown"
 	}
 }
@@ -178,6 +182,9 @@ func (j Job) Failed() bool {
 	switch j.Conclusion {
 	case ConclusionFailure, ConclusionTimedOut:
 		return true
+	case ConclusionSuccess, ConclusionSkipped, ConclusionCancelled,
+		ConclusionNeutral, ConclusionNone:
+		return false
 	default:
 		return false
 	}

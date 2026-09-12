@@ -14,6 +14,14 @@ type Result struct {
 	Stdout   string
 	Stderr   string
 	ExitCode int
+
+	// Skipped reports that --dry-run announced this command instead of
+	// running it, so the zero Stdout means "nothing ran" rather than "the
+	// command produced no output". Any caller that parses Stdout must check
+	// it; a caller that needs real output under --dry-run is asking a
+	// read-only question and belongs on the unwrapped runner (App.ReadGit,
+	// App.ReadHelm, App.ReadHerdr).
+	Skipped bool
 }
 
 // Opts describes a single external command invocation.

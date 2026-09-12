@@ -22,9 +22,10 @@ func newClusterCommand(app *App) *cobra.Command {
 Commands for installing and inspecting the chart built from a ticket's branch on
 the local development cluster.
 
-Settings are keyed by kube context name and learned on first use. The presence
-of a clusters entry in the config is the allowlist: flow refuses to upgrade a
-context it has never been told about.`),
+Settings are keyed by kube context name and learned on first use: an unknown
+context is never acted on silently. Interactively, flow asks for the release,
+namespace, chart and values file and records them under clusters in the config;
+non-interactively it refuses outright rather than guessing.`),
 	}
 
 	cmd.AddCommand(
@@ -121,10 +122,13 @@ func (a *App) resolveCluster(ctx context.Context, flags clusterFlags, repoKey st
 // to the config file.
 func (a *App) learnCluster(ctx context.Context, contextName, repoKey string) (config.ClusterConfig, error) {
 	if !a.Out.Interactive() {
+		// No mention of --release/--namespace/--helm-repo/--chart here: those
+		// overrides are applied further down resolveCluster, after this
+		// function has already returned, so supplying them does not get a user
+		// past an unconfigured context.
 		return config.ClusterConfig{}, Precondition(
 			"kube context %q is not configured, and flow cannot prompt here.\n"+
-				"Either add a clusters.%s block to %s, or re-run interactively, or supply "+
-				"--release, --namespace, --helm-repo and --chart explicitly.",
+				"Add a clusters.%s block to %s, or re-run interactively to set it up.",
 			contextName, contextName, a.cfgPath)
 	}
 

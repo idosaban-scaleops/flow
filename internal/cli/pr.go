@@ -35,8 +35,13 @@ func newPRCommand(app *App) *cobra.Command {
 	f.BoolVar(&create, "create", false, "go straight to the compare page when no PR exists")
 	f.BoolVar(&strict, "strict", false, "exit 3 when no pull request exists")
 
+	// --web names the default, so the only thing it can mean is "not --print".
+	// Asking for both is a contradiction rather than something to resolve
+	// silently; it used to be accepted and ignored.
+	cmd.MarkFlagsMutuallyExclusive("print", "web")
+
 	cmd.RunE = app.runArgs(func(ctx context.Context, args []string) error {
-		_ = web
+		openInBrowser := web || !printOnly
 		got, err := app.resolveTicket(ctx, first(args))
 		if err != nil {
 			return err
@@ -65,7 +70,7 @@ func newPRCommand(app *App) *cobra.Command {
 					"ticket": got.Entry.TicketID, "branch": branch, "pr": info,
 				})
 			}
-			if printOnly {
+			if !openInBrowser {
 				app.Out.Line(info.URL)
 				return nil
 			}
@@ -102,7 +107,7 @@ func newPRCommand(app *App) *cobra.Command {
 			app.Out.Warn("branch %s has never been pushed; run `git push -u %s %s` first",
 				branch, app.cfg.Defaults.Remote, branch)
 		}
-		if printOnly {
+		if !openInBrowser {
 			app.Out.Line(compare)
 			return nil
 		}

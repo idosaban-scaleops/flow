@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,14 +14,21 @@ import (
 	"github.com/idosaban-scaleops/flow/internal/kube"
 )
 
-// kubeContextArg is the value to pass to helm's --kube-context: empty unless
-// the user overrode the current context.
-func (t clusterTarget) kubeContextArg() string {
-	if t.Overridden {
-		return t.Context
-	}
-	return ""
-}
+// kubeContextArg is the value to pass to helm's --kube-context: always the
+// context flow resolved, whether or not --context overrode it.
+//
+// Sending it only for an override left helm to resolve the context itself,
+// which has two consequences. The payload.Command printed for the user to copy
+// omits the flag, so it is not reproducible from another shell; and the
+// confirmation prompt names target.Context while helm independently re-reads
+// the kubeconfig, so a `kubectl config use-context` between the two redirects
+// the upgrade, rollback or uninstall to a different cluster than the one the
+// user just agreed to.
+//
+// This does not conflict with "never mutate the user's kubeconfig" — that rule
+// is about `use-context`, and AGENTS.md names passing --kube-context as the
+// sanctioned way to target a cluster.
+func (t clusterTarget) kubeContextArg() string { return t.Context }
 
 func newClusterStatusCommand(app *App) *cobra.Command {
 	var flags clusterFlags
@@ -201,9 +209,14 @@ func newClusterRollbackCommand(app *App) *cobra.Command {
 
 		revision := 0
 		if len(args) == 1 {
-			if _, err := fmt.Sscanf(args[0], "%d", &revision); err != nil || revision <= 0 {
+			// strconv.Atoi, not fmt.Sscanf: Sscanf stops at the first
+			// non-digit and reports success, so "3abc" would roll back to
+			// revision 3.
+			parsed, err := strconv.Atoi(args[0])
+			if err != nil || parsed <= 0 {
 				return Usage("revision must be a positive integer, got %q", args[0])
 			}
+			revision = parsed
 		}
 
 		// Name the chart version being rolled back to before asking.

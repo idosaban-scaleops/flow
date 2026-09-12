@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	osexec "os/exec"
+	"strings"
 	"syscall"
 )
 
@@ -92,6 +93,11 @@ func (r *Real) StartDetached(_ context.Context, opts Opts) error {
 		cmd.Env = append(os.Environ(), opts.Env...)
 	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = devNull, devNull, devNull
+	// Setsid detaches the child from flow's process group so it survives the
+	// shell that started flow. syscall.SysProcAttr.Setsid is Unix-only: this
+	// file would not compile for windows/*, which .goreleaser.yaml does not
+	// target. Adding Windows means splitting this into real_unix.go and
+	// real_windows.go rather than patching around it here.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	if err := cmd.Start(); err != nil {
@@ -162,10 +168,6 @@ func (e *ExitError) Error() string {
 }
 
 func firstLine(s string) string {
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\n' {
-			return s[:i]
-		}
-	}
-	return s
+	line, _, _ := strings.Cut(s, "\n")
+	return line
 }
