@@ -55,7 +55,8 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - uses: golangci/golangci-lint-action@v6
+      # The build tags and timeout live in .golangci.yaml; the pinned
+      # golangci-lint version lives in .tool-versions.
+      - uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.12.2
-          args: --build-tags integration --timeout 5m
+          version-file: .tool-versions

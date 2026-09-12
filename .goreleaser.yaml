@@ -71,7 +71,7 @@ changelog:
     - title: Other
       order: 99
 
-brews:
+homebrew_casks:
   - name: flow
     repository:
       owner: idosaban-scaleops
@@ -79,13 +79,23 @@ brews:
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     homepage: https://github.com/idosaban-scaleops/flow
     description: A personal workflow CLI for ticket-driven development
-    license: MIT
-    install: |
-      bin.install "flow"
-      man1.install "man/man1/flow.1" if File.exist?("man/man1/flow.1")
-      generate_completions_from_executable(bin/"flow", "completions")
-    test: |
-      system "#{bin}/flow", "--version"
+    binaries:
+      - flow
+    manpages:
+      - man/man1/flow.1
+    generate_completions_from_executable:
+      executable: flow
+      args:
+        - completions
+      shell_parameter_format: cobra
+    hooks:
+      post:
+        # The binary is not signed or notarized, so without this macOS
+        # Gatekeeper refuses to run it ("flow is damaged and cannot be opened").
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/flow"]
+          end
 
 release:
   prerelease: auto
