@@ -312,7 +312,7 @@ are redacted.
 ## zsh completions
 
 `flow completions` is an alias for `flow completion`, so both spellings work.
-The Homebrew formula installs them for you. Otherwise:
+The Homebrew cask installs them for you. Otherwise:
 
 ```sh
 # Once, if completion is not already enabled:
