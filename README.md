@@ -28,6 +28,13 @@ or from the Homebrew tap, which also installs man pages and shell completions:
 brew install idosaban-scaleops/tap/flow
 ```
 
+Use the fully qualified name to upgrade too — Homebrew core has an unrelated
+`flow-desktop` cask, and a bare `brew upgrade flow` matches that instead:
+
+```sh
+brew upgrade idosaban-scaleops/tap/flow
+```
+
 Requires Go 1.26 or newer to build. `git` is required at runtime; `herdr`,
 `cursor`, `helm` and `kubectl` are optional and only needed by the commands that
 use them. Run `flow doctor` to see what is missing.
