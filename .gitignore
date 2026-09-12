@@ -1,3 +1,28 @@
+# Build output
 /bin/
 /dist/
+
+# Generated at release time by the GoReleaser `before` hook, from flow's own
+# hidden `man` command.
 /flow.1
+
+# Test and coverage artifacts. Go writes a test binary named after the package
+# directory when a build fails partway, and `go test -c` produces *.test.
+*.out
+*.test
+coverage.*
+/profile.cov
+
+# Go workspace files are per-developer, never shared.
+go.work
+go.work.sum
+
+# Editor and OS noise
+.DS_Store
+.idea/
+*.swp
+*~
+
+# Agent and assistant local state. The checked-in AGENTS.md is shared; anything
+# under .claude/ is this machine's own settings.
+.claude/
