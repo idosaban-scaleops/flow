@@ -7,6 +7,13 @@ before:
     - go mod tidy
     # fang registers a hidden `man` command; generate the pages from it.
     - sh -c 'go run ./cmd/flow man > flow.1 2>/dev/null || true'
+    # Completions are generated here, not by running the binary at install
+    # time: the released binary is ad-hoc signed rather than notarized, so
+    # Gatekeeper SIGKILLs it the first time Homebrew executes it.
+    - mkdir -p completions
+    - sh -c 'go run ./cmd/flow completion bash > completions/flow.bash'
+    - sh -c 'go run ./cmd/flow completion zsh > completions/flow.zsh'
+    - sh -c 'go run ./cmd/flow completion fish > completions/flow.fish'
 
 builds:
   - id: flow
@@ -43,6 +50,10 @@ archives:
       - LICENSE
       - src: flow.1
         dst: man/man1/flow.1
+        info:
+          mode: 0644
+      - src: completions/flow.*
+        dst: completions
         info:
           mode: 0644
 
@@ -83,11 +94,10 @@ homebrew_casks:
       - flow
     manpages:
       - man/man1/flow.1
-    generate_completions_from_executable:
-      executable: flow
-      args:
-        - completions
-      shell_parameter_format: cobra
+    completions:
+      bash: completions/flow.bash
+      zsh: completions/flow.zsh
+      fish: completions/flow.fish
     hooks:
       post:
         # The binary is not signed or notarized, so without this macOS
