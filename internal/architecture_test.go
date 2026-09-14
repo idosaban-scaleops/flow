@@ -88,6 +88,71 @@ func TestTestsDoNotImportGoGitHub(t *testing.T) {
 	})
 }
 
+// TestBubbleteaProgramsGetTheTerminalFile pins the one handoff that cannot be
+// checked by reading the code: every bubbletea program — huh's forms and
+// spinner, and the live CI display — must be given output.Renderer's
+// ProgramWriter. Bubbletea measures its window only when the writer satisfies
+// term.File, so handing it the colorprofile writer leaves the program at 0x0,
+// painting an empty frame forever. At a prompt that is indistinguishable from a
+// hang, and no unit test catches it without a real terminal.
+func TestBubbleteaProgramsGetTheTerminalFile(t *testing.T) {
+	root := repoRoot(t)
+	fset := token.NewFileSet()
+
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			switch entry.Name() {
+			case ".git", "bin", "dist", "testdata":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			return err
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "WithOutput" || len(call.Args) != 1 {
+				return true
+			}
+			if isProgramWriterCall(call.Args[0]) {
+				return true
+			}
+			t.Errorf("%s:%d: WithOutput is not given Renderer.ProgramWriter()\n"+
+				"A bubbletea program handed anything but the terminal file sits at a 0x0 "+
+				"window and paints nothing, which reads as a hang.",
+				mustRel(t, root, path), fset.Position(call.Pos()).Line)
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// isProgramWriterCall reports whether expr is a call of the form x.ProgramWriter().
+func isProgramWriterCall(expr ast.Expr) bool {
+	call, ok := expr.(*ast.CallExpr)
+	if !ok || len(call.Args) != 0 {
+		return false
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	return ok && sel.Sel.Name == "ProgramWriter"
+}
+
 func isCharm(importPath string) bool {
 	return strings.HasPrefix(importPath, "charm.land/") ||
 		strings.HasPrefix(importPath, "github.com/charmbracelet/")

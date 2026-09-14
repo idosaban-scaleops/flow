@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 )
 
@@ -100,8 +101,20 @@ func (r *Renderer) Input(title, def string) (string, error) {
 
 // runForm renders a form on stderr with the same color profile as every other
 // byte flow emits, and normalizes ctrl-c into ErrAborted.
+//
+// The output is ProgramWriter (the terminal file) rather than r.err: handed the
+// colorprofile writer, bubbletea sits at a 0x0 window and draws an empty frame
+// forever, which is what made every prompt in flow look like a hang. The
+// profile r.err would have applied is passed to bubbletea directly instead.
+// WithProgramOptions replaces the option slice rather than appending to it, so
+// it has to come before WithOutput and WithInput.
 func (r *Renderer) runForm(form *huh.Form) error {
-	err := form.WithOutput(r.err).WithInput(r.stdin).WithShowHelp(false).Run()
+	err := form.
+		WithProgramOptions(tea.WithColorProfile(r.Profile())).
+		WithOutput(r.ProgramWriter()).
+		WithInput(r.stdin).
+		WithShowHelp(false).
+		Run()
 	switch {
 	case err == nil:
 		return nil

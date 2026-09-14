@@ -57,7 +57,7 @@ func newLiveDisplay(r *output.Renderer, target Target, chart string) *liveDispla
 	// Deliberately not the alt screen: the final frame must stay in scrollback
 	// after the command finishes.
 	p := tea.NewProgram(m,
-		tea.WithOutput(r.ErrWriter()),
+		tea.WithOutput(r.ProgramWriter()),
 		tea.WithColorProfile(r.Profile()),
 	)
 

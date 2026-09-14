@@ -15,7 +15,7 @@ func (r *Renderer) Spin(ctx context.Context, title string, fn func() error) erro
 	var runErr error
 	err := spinner.New().
 		Title(" " + title).
-		WithOutput(r.err).
+		WithOutput(r.ProgramWriter()).
 		Context(ctx).
 		ActionWithErr(func(context.Context) error {
 			runErr = fn()

@@ -38,6 +38,11 @@ type Renderer struct {
 	stderr io.Writer
 	stdin  io.Reader
 
+	// ttyErr is stderr as a terminal file, or nil when stderr is not a
+	// terminal. Bubbletea programs must be handed this rather than the
+	// colorprofile writer: see ProgramWriter.
+	ttyErr *os.File
+
 	Theme Theme
 	Log   *log.Logger
 
@@ -70,7 +75,9 @@ func New(opts Options) *Renderer {
 
 	dark := true
 	width := 100
+	var ttyErr *os.File
 	if f, ok := stderr.(*os.File); ok && term.IsTerminal(f.Fd()) {
+		ttyErr = f
 		if w, _, err := term.GetSize(f.Fd()); err == nil && w > 0 {
 			width = w
 		}
@@ -82,6 +89,7 @@ func New(opts Options) *Renderer {
 	r := &Renderer{
 		out: outW, err: errW,
 		stdout: stdout, stderr: stderr, stdin: stdin,
+		ttyErr:      ttyErr,
 		Theme:       NewTheme(dark),
 		json:        opts.JSON,
 		interactive: isTTY(stdin) && isTTY(stderr) && !opts.JSON,
@@ -127,8 +135,9 @@ func (r *Renderer) Interactive() bool { return r.interactive }
 // Width is the usable terminal width, or a sane default when not a terminal.
 func (r *Renderer) Width() int { return r.width }
 
-// ErrWriter exposes the profile-aware stderr writer, for the CI progress
-// display which drives its own bubbletea program.
+// ErrWriter exposes the profile-aware stderr writer, for the plain CI progress
+// display that appends lines rather than driving a bubbletea program. Anything
+// that does drive one wants ProgramWriter instead.
 func (r *Renderer) ErrWriter() io.Writer { return r.err }
 
 // Profile reports the resolved color profile, so nested programs (bubbletea,
@@ -140,6 +149,20 @@ func (r *Renderer) Profile() colorprofile.Profile { return r.err.Profile }
 // are exactly the cases where a live progress display must fall back to plain
 // appended lines.
 func (r *Renderer) ColorEnabled() bool { return r.err.Profile >= colorprofile.ANSI }
+
+// ProgramWriter is the writer every bubbletea program must be given: huh's
+// forms and spinner here, and the live CI display in internal/ciwait. It is the
+// terminal file itself, not r.err, because bubbletea measures its window only
+// when the output satisfies term.File. A *colorprofile.Writer does not, so the
+// program sits at a 0x0 window and paints nothing at all — an empty frame that
+// looks exactly like a hang at a prompt. Pass tea.WithColorProfile(r.Profile())
+// alongside it and bypassing r.err costs nothing.
+func (r *Renderer) ProgramWriter() io.Writer {
+	if r.ttyErr != nil {
+		return r.ttyErr
+	}
+	return r.err
+}
 
 // Stdin exposes the input stream for prompts.
 func (r *Renderer) Stdin() io.Reader { return r.stdin }
