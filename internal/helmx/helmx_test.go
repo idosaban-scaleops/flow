@@ -189,6 +189,72 @@ func TestStatusKeepsTheChartNameAndVersionApart(t *testing.T) {
 	}
 }
 
+// TestStatusLeavesAHealthyReleaseUnexplained pins the cheap path: a deployed
+// release's description is "Upgrade complete" every time, so flow does not pay
+// a second helm call to learn it.
+func TestStatusLeavesAHealthyReleaseUnexplained(t *testing.T) {
+	f := flowexec.NewFake().Respond("helm get metadata", helmMetadataJSON)
+
+	got, err := helmx.New(f).Status(context.Background(), "scaleops", "scaleops-system", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Description != "" {
+		t.Errorf("description = %q, want none for a deployed release", got.Description)
+	}
+	if len(f.CommandLines()) != 1 {
+		t.Errorf("a deployed release cost %d helm calls: %v", len(f.CommandLines()), f.CommandLines())
+	}
+}
+
+// TestStatusExplainsAnUnhealthyRelease is the case the second call is for: the
+// reason a release is not deployed is the whole point of asking.
+func TestStatusExplainsAnUnhealthyRelease(t *testing.T) {
+	// The labels block carries its own "status", and it comes first in the
+	// fixture: the top-level pair is the one that matters.
+	failed := strings.Replace(helmMetadataJSON,
+		`"revision":7,"status":"deployed"`, `"revision":7,"status":"failed"`, 1)
+	f := flowexec.NewFake().
+		Respond("helm get metadata", failed).
+		Respond("helm status", `{"info":{"status":"failed",
+			"description":"Upgrade \"scaleops\" failed: context canceled"}}`)
+
+	got, err := helmx.New(f).Status(context.Background(), "scaleops", "scaleops-system", "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "failed" {
+		t.Fatalf("status = %q", got.Status)
+	}
+	if got.Description != `Upgrade "scaleops" failed: context canceled` {
+		t.Errorf("description = %q", got.Description)
+	}
+	if !f.Ran("helm status scaleops -n scaleops-system -o json --kube-context dev") {
+		t.Errorf("argv = %v", f.CommandLines())
+	}
+}
+
+// TestStatusSurvivesAnUnreadableDescription keeps the explanation optional: a
+// release flow cannot explain is still a release worth reporting.
+func TestStatusSurvivesAnUnreadableDescription(t *testing.T) {
+	pending := strings.Replace(helmMetadataJSON,
+		`"revision":7,"status":"deployed"`, `"revision":7,"status":"pending-upgrade"`, 1)
+	f := flowexec.NewFake().
+		Respond("helm get metadata", pending).
+		RespondWith("helm status", flowexec.Response{ExitCode: 1, Stderr: "Error: release: not found"})
+
+	got, err := helmx.New(f).Status(context.Background(), "scaleops", "scaleops-system", "")
+	if err != nil {
+		t.Fatalf("status failed because the description lookup did: %v", err)
+	}
+	if got.Revision != 7 || got.Status != "pending-upgrade" {
+		t.Errorf("release = %+v", got)
+	}
+	if got.Description != "" {
+		t.Errorf("description = %q, want empty", got.Description)
+	}
+}
+
 func TestHistoryParsesRevisions(t *testing.T) {
 	f := flowexec.NewFake().Respond("helm history", `[
 		{"revision":1,"updated":"2026-09-10 09:00:00.0 +0000 UTC","status":"superseded",

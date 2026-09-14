@@ -191,6 +191,11 @@ func (h *Helm) Upgrade(ctx context.Context, o UpgradeOptions) error {
 	return err
 }
 
+// StatusDeployed is helm's status for a release whose last operation
+// succeeded. Every other status — failed, pending-upgrade, uninstalling — means
+// the release needs explaining.
+const StatusDeployed = "deployed"
+
 // Release is the deployed release's identity and state.
 type Release struct {
 	Name         string    `json:"name"`
@@ -201,6 +206,9 @@ type Release struct {
 	ChartName    string    `json:"chart_name"`
 	ChartVersion string    `json:"chart_version"`
 	AppVersion   string    `json:"app_version"`
+	// Description is helm's outcome message for the current revision, and is
+	// only fetched for a release that is not deployed: see fillDescription.
+	Description string `json:"description,omitempty"`
 }
 
 // Status returns the deployed release's summary.
@@ -238,7 +246,7 @@ func (h *Helm) Status(ctx context.Context, release, namespace, kubeContext strin
 		return Release{}, fmt.Errorf("parse helm get metadata: %w", err)
 	}
 
-	return Release{
+	rel := Release{
 		Name:         raw.Name,
 		Namespace:    raw.Namespace,
 		Revision:     raw.Revision,
@@ -247,7 +255,45 @@ func (h *Helm) Status(ctx context.Context, release, namespace, kubeContext strin
 		ChartName:    raw.Chart,
 		ChartVersion: raw.Version,
 		AppVersion:   raw.AppVersion,
-	}, nil
+	}
+	h.fillDescription(ctx, &rel, release, namespace, kubeContext)
+	return rel, nil
+}
+
+// fillDescription supplies helm's outcome message for the current revision,
+// which `helm get metadata` does not carry.
+//
+// It costs a second call, so it is only made when the message is worth having.
+// For a deployed release it reads "Upgrade complete" every time and says
+// nothing; for a failed or pending one it is the reason — `Upgrade "scaleops"
+// failed: context canceled` — and the most useful line flow can put on screen,
+// which is exactly the case someone runs cluster status to see.
+//
+// A failure here is not fatal: the release's identity and state are already
+// known, and they are worth reporting without the explanation.
+func (h *Helm) fillDescription(ctx context.Context, rel *Release, release, namespace, kubeContext string) {
+	if rel.Status == StatusDeployed {
+		return
+	}
+
+	args := []string{"status", release, "-n", namespace, "-o", "json"}
+	if kubeContext != "" {
+		args = append(args, "--kube-context", kubeContext)
+	}
+	out, err := h.run(ctx, args...)
+	if err != nil {
+		return
+	}
+
+	var raw struct {
+		Info struct {
+			Description string `json:"description"`
+		} `json:"info"`
+	}
+	if err := json.Unmarshal([]byte(out), &raw); err != nil {
+		return
+	}
+	rel.Description = raw.Info.Description
 }
 
 // Revision is one row of `helm history`.

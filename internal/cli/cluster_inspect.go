@@ -74,6 +74,11 @@ func newClusterStatusCommand(app *App) *cobra.Command {
 		} else {
 			app.Out.Field("revision", fmt.Sprint(release.Revision))
 			app.Out.Field("status", app.styleReleaseStatus(release.Status))
+			// Only present when the release is not deployed, where it carries
+			// helm's reason for that.
+			if release.Description != "" {
+				app.Out.Field("description", release.Description)
+			}
 			if release.ChartVersion != "" {
 				app.Out.Field("chart", release.ChartVersion)
 			}
