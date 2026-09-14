@@ -132,12 +132,20 @@ func TestUpgradeArgsOrderAndContent(t *testing.T) {
 	}
 }
 
+// helmMetadataJSON is real `helm get metadata -o json` output, kept verbatim
+// down to the timestamp's numeric offset and the fields flow ignores. The bug
+// this replaces came from a hand-written fixture that had drifted from the
+// tool: it still carried helm 3's chart.metadata object, so the parser looked
+// correct while reading a key helm no longer sends.
+const helmMetadataJSON = `{"name":"scaleops","chart":"scaleops",` +
+	`"version":"v1.0.199-alpha-RD-1-a-1","appVersion":"RD-1-a",` +
+	`"labels":{"owner":"helm","status":"deployed","version":"7"},` +
+	`"dependencies":[{"name":"prometheus","version":"25.8.*"}],` +
+	`"namespace":"scaleops-system","revision":7,"status":"deployed",` +
+	`"deployedAt":"2026-09-12T11:02:10+03:00","applyMethod":"ssa"}`
+
 func TestStatusParsesRelease(t *testing.T) {
-	f := flowexec.NewFake().Respond("helm status", `{
-		"name":"scaleops","namespace":"scaleops-system","version":7,
-		"info":{"last_deployed":"2026-09-12T11:02:10.123456789Z","status":"deployed",
-		        "description":"Upgrade complete"},
-		"chart":{"metadata":{"version":"v1.0.199-alpha-RD-1-a-1","appVersion":"1.0.199"}}}`)
+	f := flowexec.NewFake().Respond("helm get metadata", helmMetadataJSON)
 
 	got, err := helmx.New(f).Status(context.Background(), "scaleops", "scaleops-system", "")
 	if err != nil {
@@ -146,13 +154,37 @@ func TestStatusParsesRelease(t *testing.T) {
 	if got.Revision != 7 || got.Status != "deployed" {
 		t.Errorf("release = %+v", got)
 	}
-	if got.ChartVersion != "v1.0.199-alpha-RD-1-a-1" {
-		t.Errorf("chart version = %q", got.ChartVersion)
-	}
+	// The offset form is helm's here, not the Z or the "+0000 UTC" form the
+	// history rows use; a layout that misses it would quietly zero the time.
 	if got.LastDeployed.IsZero() {
-		t.Error("last_deployed was not parsed")
+		t.Errorf("deployedAt %q was not parsed", "2026-09-12T11:02:10+03:00")
 	}
-	if !f.Ran("helm status scaleops -n scaleops-system -o json") {
+	if !f.Ran("helm get metadata scaleops -n scaleops-system -o json") {
+		t.Errorf("argv = %v", f.CommandLines())
+	}
+}
+
+// TestStatusKeepsTheChartNameAndVersionApart pins the fix for the empty chart
+// and app version. helm status carries none of these in helm 4; get metadata
+// carries all three, and keeps the name out of the version rather than handing
+// back the joined "<name>-<version>" string that cannot be split back.
+func TestStatusKeepsTheChartNameAndVersionApart(t *testing.T) {
+	f := flowexec.NewFake().Respond("helm get metadata", helmMetadataJSON)
+
+	got, err := helmx.New(f).Status(context.Background(), "scaleops", "scaleops-system", "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ChartName != "scaleops" {
+		t.Errorf("chart name = %q", got.ChartName)
+	}
+	if got.ChartVersion != "v1.0.199-alpha-RD-1-a-1" {
+		t.Errorf("chart version = %q, want it free of the chart name", got.ChartVersion)
+	}
+	if got.AppVersion != "RD-1-a" {
+		t.Errorf("app version = %q", got.AppVersion)
+	}
+	if !f.Ran("helm get metadata scaleops -n scaleops-system -o json --kube-context dev") {
 		t.Errorf("argv = %v", f.CommandLines())
 	}
 }

@@ -326,6 +326,10 @@ func (a *App) reportRevision(ctx context.Context, target clusterTarget) {
 		a.Out.Success("helm upgrade completed")
 		return
 	}
+	if rel.ChartVersion == "" {
+		a.Out.Success("%s is now at revision %d (%s)", rel.Name, rel.Revision, rel.Status)
+		return
+	}
 	a.Out.Success("%s is now at revision %d (%s), chart %s",
 		rel.Name, rel.Revision, rel.Status, rel.ChartVersion)
 }

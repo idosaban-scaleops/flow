@@ -74,8 +74,12 @@ func newClusterStatusCommand(app *App) *cobra.Command {
 		} else {
 			app.Out.Field("revision", fmt.Sprint(release.Revision))
 			app.Out.Field("status", app.styleReleaseStatus(release.Status))
-			app.Out.Field("chart", release.ChartVersion)
-			app.Out.Field("app version", release.AppVersion)
+			if release.ChartVersion != "" {
+				app.Out.Field("chart", release.ChartVersion)
+			}
+			if release.AppVersion != "" {
+				app.Out.Field("app version", release.AppVersion)
+			}
 			if !release.LastDeployed.IsZero() {
 				app.Out.Field("last deployed", release.LastDeployed.Local().Format(time.RFC1123))
 			}

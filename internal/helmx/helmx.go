@@ -191,21 +191,31 @@ func (h *Helm) Upgrade(ctx context.Context, o UpgradeOptions) error {
 	return err
 }
 
-// Release is the summary `helm status -o json` provides.
+// Release is the deployed release's identity and state.
 type Release struct {
 	Name         string    `json:"name"`
 	Namespace    string    `json:"namespace"`
 	Revision     int       `json:"revision"`
 	Status       string    `json:"status"`
 	LastDeployed time.Time `json:"last_deployed"`
+	ChartName    string    `json:"chart_name"`
 	ChartVersion string    `json:"chart_version"`
 	AppVersion   string    `json:"app_version"`
-	Description  string    `json:"description"`
 }
 
 // Status returns the deployed release's summary.
+//
+// It reads `helm get metadata`, not `helm status`. Status once carried the
+// chart under a nested chart.metadata object, but that was helm 3: helm 4 emits
+// only name, namespace, version, info, config and manifest, so every chart and
+// app version flow read from it came back empty. get metadata is the command
+// built for this question — it answers in one call, and it keeps the chart name
+// and its version apart rather than in helm's joined "<name>-<version>"
+// rendering, which cannot be split back (both halves may contain hyphens).
+//
+// The floor this sets is helm 3.10, where get metadata landed.
 func (h *Helm) Status(ctx context.Context, release, namespace, kubeContext string) (Release, error) {
-	args := []string{"status", release, "-n", namespace, "-o", "json"}
+	args := []string{"get", "metadata", release, "-n", namespace, "-o", "json"}
 	if kubeContext != "" {
 		args = append(args, "--kube-context", kubeContext)
 	}
@@ -215,36 +225,29 @@ func (h *Helm) Status(ctx context.Context, release, namespace, kubeContext strin
 	}
 
 	var raw struct {
-		Name      string `json:"name"`
-		Namespace string `json:"namespace"`
-		Version   int    `json:"version"`
-		Info      struct {
-			LastDeployed string `json:"last_deployed"`
-			Status       string `json:"status"`
-			Description  string `json:"description"`
-		} `json:"info"`
-		Chart struct {
-			Metadata struct {
-				Version    string `json:"version"`
-				AppVersion string `json:"appVersion"`
-			} `json:"metadata"`
-		} `json:"chart"`
+		Name       string `json:"name"`
+		Namespace  string `json:"namespace"`
+		Revision   int    `json:"revision"`
+		Status     string `json:"status"`
+		Chart      string `json:"chart"`
+		Version    string `json:"version"`
+		AppVersion string `json:"appVersion"`
+		DeployedAt string `json:"deployedAt"`
 	}
 	if err := json.Unmarshal([]byte(out), &raw); err != nil {
-		return Release{}, fmt.Errorf("parse helm status: %w", err)
+		return Release{}, fmt.Errorf("parse helm get metadata: %w", err)
 	}
 
-	rel := Release{
+	return Release{
 		Name:         raw.Name,
 		Namespace:    raw.Namespace,
-		Revision:     raw.Version,
-		Status:       raw.Info.Status,
-		ChartVersion: raw.Chart.Metadata.Version,
-		AppVersion:   raw.Chart.Metadata.AppVersion,
-		Description:  raw.Info.Description,
-	}
-	rel.LastDeployed = parseHelmTime(raw.Info.LastDeployed)
-	return rel, nil
+		Revision:     raw.Revision,
+		Status:       raw.Status,
+		LastDeployed: parseHelmTime(raw.DeployedAt),
+		ChartName:    raw.Chart,
+		ChartVersion: raw.Version,
+		AppVersion:   raw.AppVersion,
+	}, nil
 }
 
 // Revision is one row of `helm history`.
