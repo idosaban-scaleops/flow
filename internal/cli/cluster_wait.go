@@ -83,10 +83,20 @@ func (a *App) waitForBuild(ctx context.Context, req versionRequest) (ciwait.Resu
 	display := ciwait.NewDisplay(a.Out, target, "")
 	defer display.Close()
 
+	// pumped is closed once every event has reached the display. Waiting for
+	// it before tearing the display down is what lets the final frame — the
+	// 100% one the state machine emits on success — actually get painted:
+	// events is buffered, so Run returns as soon as it has handed the last
+	// state over, well before the pump has forwarded it.
 	events := make(chan ciwait.Event, 16)
-	go a.pumpEvents(ctx, waiter, display, events)
+	pumped := make(chan struct{})
+	go func() {
+		defer close(pumped)
+		a.pumpEvents(ctx, waiter, display, events)
+	}()
 
 	result, err := waiter.Run(ctx, events)
+	<-pumped
 	display.Close()
 
 	if err != nil {
