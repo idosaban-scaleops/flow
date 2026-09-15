@@ -22,6 +22,10 @@ type names struct {
 	WorktreePath   string
 	AssetsPath     string
 	WorkspaceLabel string
+	// LabelExplicit reports that WorkspaceLabel came from --label rather than
+	// from the naming template, which decides whether a mismatch is worth a
+	// warning.
+	LabelExplicit bool
 }
 
 // deriveNames applies the configured naming templates.

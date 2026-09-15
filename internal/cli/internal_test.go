@@ -12,6 +12,7 @@ import (
 	"github.com/idosaban-scaleops/flow/internal/helmx"
 	"github.com/idosaban-scaleops/flow/internal/kube"
 	"github.com/idosaban-scaleops/flow/internal/output"
+	"github.com/idosaban-scaleops/flow/internal/registry"
 )
 
 func durationSeconds(n int) time.Duration { return time.Duration(n) * time.Second }
@@ -362,5 +363,109 @@ func TestStatusFrame(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// appWithHerdr builds an App whose herdr client is the fake runner, with a
+// buffer standing in for stderr so warnings can be asserted.
+func appWithHerdr(f flowexec.Runner, errOut *strings.Builder) *App {
+	cfg := config.Default()
+	return &App{
+		cfg:        cfg,
+		Runner:     f,
+		baseRunner: f,
+		Out: output.New(output.Options{
+			NoColor: true, Stdout: io.Discard, Stderr: errOut,
+		}),
+	}
+}
+
+// --label names the workspace flow creates. The flag is the only way to give a
+// workspace a readable name and still have flow find it again, since the
+// derived label is mechanically {id}.
+func TestExplicitLabelReachesHerdr(t *testing.T) {
+	f := flowexec.NewFake().
+		Respond("herdr workspace list", `{"result":{"workspaces":[]}}`).
+		Respond("herdr workspace create",
+			`{"result":{"workspace":{"workspace_id":"w9","label":"New Toolbar"}}}`)
+
+	var errOut strings.Builder
+	app := appWithHerdr(f, &errOut)
+	result := initResult{Entry: registry.Entry{
+		TicketID: "RD-1", WorktreePath: "/repo/.worktrees/RD-1-toolbar",
+	}}
+	app.ensureWorkspace(t.Context(), &result,
+		names{WorkspaceLabel: "New Toolbar", LabelExplicit: true}, false)
+
+	// CommandLines quotes arguments containing spaces, which a readable label has.
+	want := "herdr workspace create --cwd /repo/.worktrees/RD-1-toolbar --label 'New Toolbar'"
+	if !f.Ran(want) {
+		t.Errorf("argv = %v, want %q", f.CommandLines(), want)
+	}
+	if result.Entry.Workspace.ID != "w9" || result.Entry.Workspace.Label != "New Toolbar" {
+		t.Errorf("recorded workspace = %+v", result.Entry.Workspace)
+	}
+}
+
+// A workspace found by its recorded ID is focused, never retitled: the user may
+// have renamed it deliberately. An explicit --label that cannot be honoured is
+// reported rather than silently dropped.
+func TestExplicitLabelDoesNotRenameAnExistingWorkspace(t *testing.T) {
+	f := flowexec.NewFake().
+		Respond("herdr workspace list",
+			`{"result":{"workspaces":[{"workspace_id":"w12","label":"ROT Auto Timeline"}]}}`).
+		Respond("herdr workspace focus", `{"result":{"type":"ok"}}`)
+
+	var errOut strings.Builder
+	app := appWithHerdr(f, &errOut)
+	result := initResult{Entry: registry.Entry{
+		TicketID:  "RD-1",
+		Workspace: registry.Workspace{Provider: "herdr", ID: "w12", Label: "RD-1"},
+	}}
+	app.ensureWorkspace(t.Context(), &result,
+		names{WorkspaceLabel: "Something Else", LabelExplicit: true}, false)
+
+	for _, line := range f.CommandLines() {
+		if strings.Contains(line, "workspace create") || strings.Contains(line, "workspace rename") {
+			t.Errorf("an existing workspace must be focused, not %q", line)
+		}
+	}
+	if !f.Ran("herdr workspace focus w12") {
+		t.Errorf("argv = %v, want a focus of w12", f.CommandLines())
+	}
+	if got := errOut.String(); !strings.Contains(got, "herdr workspace rename w12") {
+		t.Errorf("stderr = %q, want a warning naming the rename command", got)
+	}
+	// The recorded label tracks herdr, so the next run finds it by label too.
+	if result.Entry.Workspace.Label != "ROT Auto Timeline" {
+		t.Errorf("recorded label = %q, want herdr's current label", result.Entry.Workspace.Label)
+	}
+}
+
+// The derived label is only a fallback: a workspace whose label matches is
+// adopted rather than duplicated, which is what makes a lost ID recoverable.
+func TestDerivedLabelAdoptsAMatchingWorkspace(t *testing.T) {
+	f := flowexec.NewFake().
+		Respond("herdr workspace list",
+			`{"result":{"workspaces":[{"workspace_id":"w7","label":"RD-1"}]}}`).
+		Respond("herdr workspace focus", `{"result":{"type":"ok"}}`)
+
+	var errOut strings.Builder
+	app := appWithHerdr(f, &errOut)
+	result := initResult{Entry: registry.Entry{
+		TicketID:  "RD-1",
+		Workspace: registry.Workspace{Provider: "herdr", Label: "RD-1"},
+	}}
+	app.ensureWorkspace(t.Context(), &result, names{WorkspaceLabel: "RD-1"}, false)
+
+	if f.Ran("herdr workspace create") {
+		t.Errorf("a label match must adopt, not create: %v", f.CommandLines())
+	}
+	// Adoption is what heals an entry that never recorded an ID.
+	if result.Entry.Workspace.ID != "w7" {
+		t.Errorf("recorded ID = %q, want w7", result.Entry.Workspace.ID)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("a derived label must not warn: %q", errOut.String())
 	}
 }

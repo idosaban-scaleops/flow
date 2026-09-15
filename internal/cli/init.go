@@ -22,6 +22,7 @@ import (
 type initOptions struct {
 	base        string
 	branch      string
+	label       string
 	noFetch     bool
 	noEditor    bool
 	noWorkspace bool
@@ -66,6 +67,7 @@ destroys an existing worktree.`),
 		Example: strings.TrimSpace(`
   flow init RD-19471 add new toolbar
   flow init RD-19471 "add new toolbar" --base release-2.4
+  flow init RD-19471 add new toolbar --label "New Toolbar"
   flow init RD-19471 add new toolbar --no-editor --no-workspace
   flow init RD-19471 add new toolbar --adopt-only`),
 		Args: cobra.MinimumNArgs(2),
@@ -74,6 +76,7 @@ destroys an existing worktree.`),
 	f := cmd.Flags()
 	f.StringVar(&opts.base, "base", "", "branch or ref to create the new branch from")
 	f.StringVar(&opts.branch, "branch", "", "override the derived branch name")
+	f.StringVar(&opts.label, "label", "", "override the derived herdr workspace label")
 	f.BoolVar(&opts.noFetch, "no-fetch", false, "skip fetching the remote before branching")
 	f.BoolVar(&opts.noEditor, "no-editor", false, "do not launch the editor")
 	f.BoolVar(&opts.noWorkspace, "no-workspace", false, "do not create the herdr workspace")
@@ -111,6 +114,9 @@ func (a *App) runInit(ctx context.Context, args []string, opts initOptions) erro
 		n.Branch = opts.branch
 		n.WorktreePath = filepath.Join(repo.Root, a.cfg.Naming.WorktreesSubdir, opts.branch)
 	}
+	if opts.label != "" {
+		n.WorkspaceLabel, n.LabelExplicit = opts.label, true
+	}
 
 	base := opts.base
 	if base == "" {
@@ -139,6 +145,13 @@ func (a *App) runInit(ctx context.Context, args []string, opts initOptions) erro
 	if hasEntry {
 		if err := a.reconcileEntry(&result, existing, tk); err != nil {
 			return err
+		}
+		// A label recorded earlier — by --label, or by a rename flow has since
+		// seen — outranks the derived one, exactly as it does in `flow open`.
+		// Without this a second `flow init` would look for the derived label,
+		// miss, and create a duplicate workspace beside the labelled one.
+		if opts.label == "" && result.Entry.Workspace.Label != "" {
+			n.WorkspaceLabel = result.Entry.Workspace.Label
 		}
 	}
 
@@ -422,6 +435,13 @@ func (a *App) ensureWorkspace(ctx context.Context, result *initResult, n names, 
 	}
 
 	if ws, ok := herdr.FindByID(list, result.Entry.Workspace.ID); ok {
+		// --label names a workspace to create, not a rename: flow will not
+		// retitle a workspace the user may have deliberately named.
+		if n.LabelExplicit && ws.Label != n.WorkspaceLabel {
+			a.Out.Warn("%s already has workspace %s labelled %q; keeping it — "+
+				"rename it yourself with `herdr workspace rename %s %q`",
+				result.Entry.TicketID, ws.ID, ws.Label, ws.ID, n.WorkspaceLabel)
+		}
 		a.focusWorkspace(ctx, client, ws, result)
 		return
 	}
