@@ -158,19 +158,20 @@ func (a *App) statusFrame(target clusterTarget, snap clusterStatus) string {
 	t := a.Out.Theme
 	var b strings.Builder
 
-	b.WriteString(a.Out.RenderField("kube context", t.Bold.Render(target.Context)) + "\n")
+	b.WriteString(a.frameField("kube context",
+		t.Bold.Render(output.Truncate(target.Context, a.fieldValueWidth()))) + "\n")
 	if target.Server != "" {
-		b.WriteString(a.Out.RenderField("server", target.Server) + "\n")
+		b.WriteString(a.frameField("server", target.Server) + "\n")
 	}
-	b.WriteString(a.Out.RenderField("release", target.Settings.ReleaseName) + "\n")
-	b.WriteString(a.Out.RenderField("namespace", target.Settings.Namespace) + "\n\n")
+	b.WriteString(a.frameField("release", target.Settings.ReleaseName) + "\n")
+	b.WriteString(a.frameField("namespace", target.Settings.Namespace) + "\n\n")
 
 	if snap.relErr != nil {
 		b.WriteString(t.Warn.Render(fmt.Sprintf("%s no helm release %q in %s",
 			output.SymWarn, target.Settings.ReleaseName, target.Settings.Namespace)) + "\n\n")
 	} else {
 		for _, field := range a.releaseFields(snap.release) {
-			b.WriteString(a.Out.RenderField(field[0], field[1]) + "\n")
+			b.WriteString(a.frameField(field[0], field[1]) + "\n")
 		}
 		b.WriteString("\n")
 	}
@@ -183,13 +184,62 @@ func (a *App) statusFrame(target clusterTarget, snap clusterStatus) string {
 		b.WriteString(t.Muted.Render("no pods in the namespace") + "\n")
 	default:
 		rows, unhealthy := a.podRows(snap.pods)
-		b.WriteString(a.Out.RenderTable(podHeaders, rows) + "\n")
+		b.WriteString(a.Out.RenderTable(podHeaders, a.fitPodRows(rows)) + "\n")
 		if unhealthy > 0 {
 			b.WriteString(t.Warn.Render(fmt.Sprintf("%s %d pod(s) are not Running or Succeeded",
 				output.SymWarn, unhealthy)) + "\n")
 		}
 	}
 	return b.String()
+}
+
+// fieldLabelWidth is what RenderField spends on the label column before the
+// value starts: the padding it applies, plus the space after it.
+const fieldLabelWidth = 19
+
+// minFieldValueWidth is the floor on a field value, for a terminal narrow
+// enough that the arithmetic would otherwise leave nothing.
+const minFieldValueWidth = 20
+
+// frameField renders one label/value line for a repainted frame, truncated so
+// that a long value cannot wrap. Callers passing an already-styled value
+// truncate it themselves, before styling: cutting a styled string can land
+// inside an escape sequence.
+func (a *App) frameField(label, value string) string {
+	return a.Out.RenderField(label, output.Truncate(value, a.fieldValueWidth()))
+}
+
+func (a *App) fieldValueWidth() int {
+	return max(a.Out.Width()-fieldLabelWidth, minFieldValueWidth)
+}
+
+// minPodNameWidth is the floor on the pod-name column: below this the names
+// are all ellipsis and the table stops being worth showing at all.
+const minPodNameWidth = 20
+
+// fitPodRows truncates the pod-name column so the table cannot outrun the
+// terminal. A wrapped line corrupts an in-place repaint, which is the same
+// reason internal/ciwait truncates every row it renders; the printed table is
+// left alone, where a wrap costs nothing.
+func (a *App) fitPodRows(rows [][]string) [][]string {
+	const columnPadding = 2
+
+	// Every column but the name is as wide as its widest cell. What is left is
+	// what the name may have.
+	rest := columnPadding
+	for col := 1; col < len(podHeaders); col++ {
+		widest := output.VisibleWidth(podHeaders[col])
+		for _, row := range rows {
+			widest = max(widest, output.VisibleWidth(row[col]))
+		}
+		rest += widest + columnPadding
+	}
+
+	width := max(a.Out.Width()-rest, minPodNameWidth)
+	for i := range rows {
+		rows[i][0] = output.Truncate(rows[i][0], width)
+	}
+	return rows
 }
 
 func podPayload(pods []kube.Pod) []map[string]any {

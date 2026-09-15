@@ -206,7 +206,7 @@ func (a *App) runHelmUpgrade(ctx context.Context, upgrade helmx.UpgradeOptions) 
 
 	var res flowexec.Result
 	err := a.Out.Spin(ctx, fmt.Sprintf("upgrading %s in %s…", upgrade.Release, upgrade.Namespace),
-		func() error {
+		func(ctx context.Context) error {
 			var runErr error
 			res, runErr = helm.UpgradeCaptured(ctx, upgrade)
 			return runErr

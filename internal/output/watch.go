@@ -38,7 +38,12 @@ func (r *Renderer) Watch(ctx context.Context, interval time.Duration, frame func
 	if interval < MinWatchInterval {
 		interval = MinWatchInterval
 	}
-	if !r.interactive || !r.ColorEnabled() {
+	// Only a terminal is required, not color: bubbletea repaints just as well
+	// at the ASCII profile, and a --no-color watch is still a watch. This is
+	// the one place the CI display's extra ColorEnabled check does not apply,
+	// because its fallback — a transition log — is a different rendering,
+	// while the alternative here is simply not watching.
+	if !r.interactive {
 		fmt.Fprintln(r.out, strings.TrimRight(frame(ctx), "\n"))
 		return nil
 	}

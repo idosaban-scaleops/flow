@@ -277,6 +277,11 @@ func (r *Renderer) JSONError(code, message string) {
 	})
 }
 
+// VisibleWidth is the width s occupies on screen, discounting the ANSI escapes
+// a styled cell carries. It is exported so a caller assembling a frame can size
+// a column without importing lipgloss itself.
+func VisibleWidth(s string) int { return lipgloss.Width(s) }
+
 // Truncate shortens s to width runes, ending with an ellipsis.
 func Truncate(s string, width int) string {
 	if width <= 0 {
