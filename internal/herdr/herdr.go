@@ -176,29 +176,56 @@ type envelope struct {
 }
 
 type rawWorkspace struct {
-	Workspace  *rawNode    `json:"workspace"`
-	Tab        *rawNode    `json:"tab"`
-	RootPane   *rawNode    `json:"root_pane"`
-	RootPaneV2 *rawNode    `json:"rootPane"`
-	ID         flexID      `json:"id"`
-	Label      string      `json:"label"`
-	Name       string      `json:"name"`
-	CWD        string      `json:"cwd"`
-	Workspaces []*rawEntry `json:"workspaces"`
+	Workspace   *rawNode    `json:"workspace"`
+	Tab         *rawNode    `json:"tab"`
+	RootPane    *rawNode    `json:"root_pane"`
+	RootPaneV2  *rawNode    `json:"rootPane"`
+	WorkspaceID flexID      `json:"workspace_id"`
+	ID          flexID      `json:"id"`
+	Label       string      `json:"label"`
+	Name        string      `json:"name"`
+	CWD         string      `json:"cwd"`
+	Workspaces  []*rawEntry `json:"workspaces"`
 }
 
 type rawEntry struct {
-	ID    flexID `json:"id"`
-	Label string `json:"label"`
-	Name  string `json:"name"`
-	CWD   string `json:"cwd"`
+	WorkspaceID flexID `json:"workspace_id"`
+	ID          flexID `json:"id"`
+	Label       string `json:"label"`
+	Name        string `json:"name"`
+	CWD         string `json:"cwd"`
 }
 
 type rawNode struct {
-	ID    flexID `json:"id"`
-	Label string `json:"label"`
-	Name  string `json:"name"`
-	CWD   string `json:"cwd"`
+	TabIDKey    flexID `json:"tab_id"`
+	PaneIDKey   flexID `json:"pane_id"`
+	WorkspaceID flexID `json:"workspace_id"`
+	ID          flexID `json:"id"`
+	Label       string `json:"label"`
+	Name        string `json:"name"`
+	CWD         string `json:"cwd"`
+}
+
+// id prefers herdr's `workspace_id` over a bare `id`. herdr's envelopes carry a
+// command identifier such as "cli:workspace:get" under `id`, which must never
+// be mistaken for a workspace identifier.
+func (r rawWorkspace) id() string { return firstNonEmpty(string(r.WorkspaceID), notCommandID(r.ID)) }
+func (r rawEntry) id() string     { return firstNonEmpty(string(r.WorkspaceID), notCommandID(r.ID)) }
+func (r rawNode) id() string      { return firstNonEmpty(string(r.WorkspaceID), notCommandID(r.ID)) }
+
+// tabID and paneID follow the same rule one level down: herdr names these
+// `tab_id` and `pane_id`, older shapes carried them as `id`.
+func (r rawNode) tabID() string  { return firstNonEmpty(string(r.TabIDKey), notCommandID(r.ID)) }
+func (r rawNode) paneID() string { return firstNonEmpty(string(r.PaneIDKey), notCommandID(r.ID)) }
+
+// notCommandID drops herdr's command identifiers, which share the `id` key with
+// the pre-workspace_id shapes flow still parses: an un-enveloped payload would
+// otherwise record "cli:workspace:create" as the workspace.
+func notCommandID(f flexID) string {
+	if strings.HasPrefix(string(f), "cli:") {
+		return ""
+	}
+	return string(f)
 }
 
 // flexID accepts an identifier given either as a JSON string or a number.
@@ -246,17 +273,17 @@ func parseWorkspace(out string) (Workspace, bool) {
 		return Workspace{}, false
 	}
 
-	ws := Workspace{ID: string(raw.ID), Label: firstNonEmpty(raw.Label, raw.Name), CWD: raw.CWD}
+	ws := Workspace{ID: raw.id(), Label: firstNonEmpty(raw.Label, raw.Name), CWD: raw.CWD}
 	if raw.Workspace != nil {
-		ws.ID = firstNonEmpty(string(raw.Workspace.ID), ws.ID)
+		ws.ID = firstNonEmpty(raw.Workspace.id(), ws.ID)
 		ws.Label = firstNonEmpty(raw.Workspace.Label, raw.Workspace.Name, ws.Label)
 		ws.CWD = firstNonEmpty(raw.Workspace.CWD, ws.CWD)
 	}
 	if raw.Tab != nil {
-		ws.TabID = string(raw.Tab.ID)
+		ws.TabID = raw.Tab.tabID()
 	}
 	if pane := firstNonNil(raw.RootPane, raw.RootPaneV2); pane != nil {
-		ws.RootPaneID = string(pane.ID)
+		ws.RootPaneID = pane.paneID()
 	}
 
 	if ws.ID == "" && ws.TabID == "" && ws.Label == "" {
@@ -287,7 +314,7 @@ func parseWorkspaceList(out string) []Workspace {
 			continue
 		}
 		out2 = append(out2, Workspace{
-			ID:    string(e.ID),
+			ID:    e.id(),
 			Label: firstNonEmpty(e.Label, e.Name),
 			CWD:   e.CWD,
 		})
