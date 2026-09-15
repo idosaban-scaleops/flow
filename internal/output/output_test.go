@@ -2,6 +2,7 @@ package output_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -299,4 +300,33 @@ func luminance(c color.Color) float64 {
 		return math.Pow((s+0.055)/1.055, 2.4)
 	}
 	return 0.2126*lin(r) + 0.7152*lin(g) + 0.0722*lin(b)
+}
+
+// TestSpinNonInteractive pins the contract the scripted path depends on: with
+// no terminal there is no spinner, fn still runs exactly once with a live
+// context, and its error is what comes back. The interactive path needs a real
+// terminal and is exercised by hand.
+func TestSpinNonInteractive(t *testing.T) {
+	var stdout bytes.Buffer
+	r := output.New(output.Options{NoColor: true, Stdout: &stdout, Stderr: &stdout})
+
+	var calls int
+	wantErr := errors.New("helm said no")
+	err := r.Spin(context.Background(), "upgrading…", func(ctx context.Context) error {
+		calls++
+		if ctx == nil || ctx.Err() != nil {
+			t.Errorf("fn was given a dead context: %v", ctx)
+		}
+		return wantErr
+	})
+
+	if !errors.Is(err, wantErr) {
+		t.Errorf("Spin returned %v, want %v", err, wantErr)
+	}
+	if calls != 1 {
+		t.Errorf("fn ran %d times, want 1", calls)
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("Spin wrote %q with no terminal", stdout.String())
+	}
 }
