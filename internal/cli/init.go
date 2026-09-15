@@ -325,12 +325,12 @@ func (a *App) ensureWorktree(
 		}
 	}
 
-	if opts.adoptOnly {
-		return "", nil
-	}
-
 	// The branch may already be checked out somewhere else; git refuses a
-	// second checkout, so offer to adopt that location instead.
+	// second checkout, so offer to adopt that location instead. Recording a
+	// worktree that already exists is adoption, not creation, so --adopt-only
+	// comes this way too — it used to return above and report that there was
+	// nothing to adopt while the worktree sat in plain sight under a directory
+	// name that simply did not match the branch.
 	if other, ok, listErr := readGit.FindWorktreeForBranch(ctx, result.Entry.Branch); listErr == nil && ok {
 		a.Out.Warn("branch %s is already checked out at %s", result.Entry.Branch, other.Path)
 		promptErr := a.confirm(
@@ -343,8 +343,17 @@ func (a *App) ensureWorktree(
 		if !errors.Is(promptErr, output.ErrAborted) {
 			return "", promptErr
 		}
+		// Declining under --adopt-only is not an error: nothing was going to
+		// be created, so the run simply adopts nothing.
+		if opts.adoptOnly {
+			return "", nil
+		}
 		return "", Precondition("branch %s is already checked out at %s; "+
 			"git cannot check it out twice", result.Entry.Branch, other.Path)
+	}
+
+	if opts.adoptOnly {
+		return "", nil
 	}
 
 	if err := a.createWorktree(ctx, git, readGit, result, remote, base); err != nil {

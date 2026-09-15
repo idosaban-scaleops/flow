@@ -600,3 +600,33 @@ func countLines(body, want string) int {
 	}
 	return n
 }
+
+// A worktree whose directory name does not match its branch is still the
+// worktree for that branch. --adopt-only exists to register what is already
+// there, so it must find this one rather than reporting nothing to adopt.
+func TestAdoptOnlyAdoptsAWorktreeAtANonMatchingPath(t *testing.T) {
+	h := newHarness(t)
+
+	path := filepath.Join(h.repoRoot, ".worktrees", "totally-different-dir")
+	h.git(h.repoRoot, "worktree", "add", "-b", "legacy-feature", path, "main")
+
+	h.mustRun(h.repoRoot, "init", "RD-19471", "brand", "new", "description",
+		"--branch", "legacy-feature", "--adopt-only", "--yes")
+
+	entries := h.entries()
+	if len(entries) != 1 {
+		t.Fatalf("want the pre-existing worktree adopted, got %d entries", len(entries))
+	}
+	// macOS resolves the temp dir through /private, so compare the tail.
+	if !strings.HasSuffix(entries[0].WorktreePath, filepath.Join(".worktrees", "totally-different-dir")) {
+		t.Errorf("worktree = %q, want the existing %q", entries[0].WorktreePath, path)
+	}
+	if entries[0].Branch != "legacy-feature" {
+		t.Errorf("branch = %q, want legacy-feature", entries[0].Branch)
+	}
+	// Adoption registers; it must never create a second worktree.
+	if got := strings.Count(h.git(h.repoRoot, "worktree", "list"), ".worktrees"); got != 1 {
+		t.Errorf("worktree list has %d entries under .worktrees, want 1:\n%s",
+			got, h.git(h.repoRoot, "worktree", "list"))
+	}
+}
