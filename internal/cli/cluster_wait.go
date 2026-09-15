@@ -56,9 +56,11 @@ func (a *App) waitForBuild(ctx context.Context, req versionRequest) (ciwait.Resu
 			"repository %s has no GitHub origin remote, so flow cannot watch CI", req.Repo.Key)
 	}
 	if req.Workflow == "" {
-		return ciwait.Result{}, Precondition(
-			"no build_workflow is configured for %s; add repos.%s.build_workflow to %s",
-			req.Repo.Key, req.Repo.Key, a.cfgPath)
+		workflow, err := a.learnBuildWorkflow(ctx, req.Repo)
+		if err != nil {
+			return ciwait.Result{}, err
+		}
+		req.Workflow = workflow
 	}
 
 	opts := req.WaitOpts

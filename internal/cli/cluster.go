@@ -200,6 +200,58 @@ func (a *App) learnCluster(ctx context.Context, contextName, repoKey string) (co
 	return settings, nil
 }
 
+// learnBuildWorkflow resolves the workflow file that builds a repository's
+// chart, asking once and recording the answer.
+//
+// This mirrors learnCluster: a setting flow cannot guess is learned on first
+// use rather than demanded up front, so nobody has to hand-edit YAML to get a
+// cluster command working. Non-interactively it still refuses, naming the key
+// and the file, because a wrong workflow means waiting on the wrong CI run.
+func (a *App) learnBuildWorkflow(ctx context.Context, repo gitx.Repo) (string, error) {
+	if !a.Out.Interactive() {
+		return "", Precondition(
+			"no build_workflow is configured for %s; add repos.%s.build_workflow to %s",
+			repo.Key, repo.Key, a.cfgPath)
+	}
+
+	a.Out.Heading(fmt.Sprintf("Setting up repo %q", repo.Key))
+
+	workflows, err := a.GitHub(ctx).ListWorkflows(ctx, repo.Owner, repo.Name)
+	if err != nil {
+		return "", Wrap(ExitDependency, "dependency", err, "listing workflows for %s", repo.Key)
+	}
+	if len(workflows) == 0 {
+		return "", Precondition(
+			"%s has no active GitHub Actions workflows, so there is no build to wait for", repo.Key)
+	}
+
+	options := make([]output.SelectOption, 0, len(workflows))
+	for _, w := range workflows {
+		options = append(options, output.SelectOption{
+			Label: w.Name + "  " + w.File, Value: w.File,
+		})
+	}
+	workflow, err := a.Out.Select(
+		fmt.Sprintf("Which workflow publishes the chart for %s?", repo.Key), options)
+	if err != nil {
+		return "", err
+	}
+
+	settings := a.cfg.Repo(repo.Key)
+	settings.BuildWorkflow = workflow
+	if err := a.mutate("write repos."+repo.Key+".build_workflow to "+a.cfgPath, func() error {
+		return config.SetRepo(a.cfgPath, repo.Key, config.RepoConfig{BuildWorkflow: workflow})
+	}); err != nil {
+		return "", Wrap(ExitFailure, "failure", err, "saving repository settings")
+	}
+	if a.cfg.Repos == nil {
+		a.cfg.Repos = map[string]config.RepoConfig{}
+	}
+	a.cfg.Repos[repo.Key] = settings
+	a.Out.Success("saved repos.%s.build_workflow to %s", repo.Key, a.cfgPath)
+	return workflow, nil
+}
+
 // printClusterHeader names exactly which cluster is about to be changed.
 func (a *App) printClusterHeader(target clusterTarget, extra map[string]string, order []string) {
 	t := a.Out.Theme

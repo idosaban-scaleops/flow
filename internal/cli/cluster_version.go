@@ -218,9 +218,11 @@ func (a *App) newestSuccessfulRun(ctx context.Context, req versionRequest) (ghap
 			"repository %s has no GitHub origin remote, so flow cannot look up CI runs", req.Repo.Key)
 	}
 	if req.Workflow == "" {
-		return ghapi.Run{}, Precondition(
-			"no build_workflow is configured for %s; add repos.%s.build_workflow to %s",
-			req.Repo.Key, req.Repo.Key, a.cfgPath)
+		workflow, err := a.learnBuildWorkflow(ctx, req.Repo)
+		if err != nil {
+			return ghapi.Run{}, err
+		}
+		req.Workflow = workflow
 	}
 
 	runs, err := a.GitHub(ctx).ListWorkflowRuns(ctx,

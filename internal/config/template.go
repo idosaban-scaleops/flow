@@ -49,6 +49,9 @@ github:
   token_keychain_service: "flow-github-token"
 
 # Per-repository overrides. Keys are "owner/name" or an absolute repo path.
+# build_workflow is learned on first use — the cluster commands ask which
+# workflow publishes the chart and record the answer here — so this block only
+# needs filling in by hand to override something or to work non-interactively.
 repos: {}
 #  scaleops-sh/scaleops:
 #    base_branch: main

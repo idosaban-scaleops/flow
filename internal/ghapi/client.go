@@ -3,6 +3,7 @@ package ghapi
 import (
 	"context"
 	"net/http"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,7 @@ const DefaultRequestTimeout = 15 * time.Second
 // this package mocks API, never go-github itself.
 type API interface {
 	FindPR(ctx context.Context, owner, repo, branch string) (PRInfo, error)
+	ListWorkflows(ctx context.Context, owner, repo string) ([]Workflow, error)
 	ListWorkflowRuns(ctx context.Context, owner, repo, workflowFile, branch string, limit int) ([]Run, error)
 	ListRunJobs(ctx context.Context, owner, repo string, runID int64) ([]Job, error)
 	SuccessfulRunDurations(ctx context.Context, owner, repo, workflowFile, branch string, limit int) ([]time.Duration, error)
@@ -179,6 +181,46 @@ func (c *Client) FindPR(ctx context.Context, owner, repo, branch string) (PRInfo
 		info.State = PROpen
 	}
 	return info, nil
+}
+
+// Workflow is one entry from a repository's Actions workflow list.
+type Workflow struct {
+	// Name is the display name, e.g. "Build And Release".
+	Name string `json:"name"`
+	// File is the base name of the workflow file, e.g. "go.yaml". That, not
+	// the display name, is what every other call here takes.
+	File string `json:"file"`
+}
+
+// ListWorkflows returns the repository's active workflows, so flow can ask
+// which one builds the chart rather than making the user look up a filename.
+// Disabled workflows are left out: they cannot produce the run flow would wait
+// for.
+func (c *Client) ListWorkflows(ctx context.Context, owner, repo string) ([]Workflow, error) {
+	var out []Workflow
+	opts := &github.ListOptions{PerPage: 100}
+
+	for {
+		pageCtx, cancel := c.withTimeout(ctx)
+		workflows, resp, err := c.gh.Actions.ListWorkflows(pageCtx, owner, repo, opts)
+		cancel()
+		c.recordRate(resp)
+		if err != nil {
+			return nil, translate(err)
+		}
+		for _, w := range workflows.Workflows {
+			if w.GetState() != "active" {
+				continue
+			}
+			// A workflow's path is ".github/workflows/go.yaml"; every other
+			// Actions call in flow wants the base name alone.
+			out = append(out, Workflow{Name: w.GetName(), File: path.Base(w.GetPath())})
+		}
+		if resp == nil || resp.NextPage == 0 {
+			return out, nil
+		}
+		opts.Page = resp.NextPage
+	}
 }
 
 // ListWorkflowRuns returns runs of one workflow file on one branch, newest

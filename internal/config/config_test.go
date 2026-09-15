@@ -149,6 +149,99 @@ func TestSetClusterPreservesComments(t *testing.T) {
 	}
 }
 
+// TestSetRepoMergesIntoAnExistingBlock is the property that separates SetRepo
+// from SetCluster. A repo block is built one answer at a time and usually
+// shares its key with settings written by hand, so a whole-node replacement
+// would silently delete them.
+func TestSetRepoMergesIntoAnExistingBlock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`repos:
+  scaleops-sh/scaleops:
+    base_branch: main
+    wait_for_jobs:
+      - "Pre Release Helm"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := config.SetRepo(path, "scaleops-sh/scaleops",
+		config.RepoConfig{BuildWorkflow: "go.yaml"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc := got.Config.Repo("scaleops-sh/scaleops")
+	if rc.BuildWorkflow != "go.yaml" {
+		t.Errorf("build_workflow = %q", rc.BuildWorkflow)
+	}
+	if rc.BaseBranch != "main" {
+		t.Errorf("base_branch = %q, want the hand-written value kept", rc.BaseBranch)
+	}
+	if len(rc.WaitForJobs) != 1 || rc.WaitForJobs[0] != "Pre Release Helm" {
+		t.Errorf("wait_for_jobs = %v, want the hand-written list kept", rc.WaitForJobs)
+	}
+}
+
+// TestSetRepoRewritesAnEmptyFlowMapping pins the readability of the file flow
+// writes: `repos: {}` is a flow-style node, and yaml.v3 preserves that style,
+// so without intervention every learned setting lands on one unreadable line.
+func TestSetRepoRewritesAnEmptyFlowMapping(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("repos: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := config.SetRepo(path, "scaleops-sh/scaleops",
+		config.RepoConfig{BuildWorkflow: "go.yaml"}); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "{") {
+		t.Errorf("written as a flow mapping:\n%s", raw)
+	}
+}
+
+// TestSetRepoCreatesTheBlockAndKeepsComments covers the case flow actually
+// hits: an untouched `flow config init` file, whose repos key is an empty
+// mapping and whose comments document every key.
+func TestSetRepoCreatesTheBlockAndKeepsComments(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(config.Template), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := config.SetRepo(path, "scaleops-sh/scaleops",
+		config.RepoConfig{BuildWorkflow: "go.yaml"}); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "# Per-repository overrides.") {
+		t.Error("the repos comment block was lost by the write-back")
+	}
+
+	got, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("config must still parse after write-back: %v", err)
+	}
+	if wf := got.Config.Repo("scaleops-sh/scaleops").BuildWorkflow; wf != "go.yaml" {
+		t.Errorf("build_workflow = %q", wf)
+	}
+}
+
 func TestSetClusterUpdatesInPlace(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

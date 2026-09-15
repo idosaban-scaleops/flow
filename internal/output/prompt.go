@@ -57,6 +57,11 @@ type SelectOption struct {
 }
 
 // Select asks the user to choose one of options.
+//
+// The list is capped in height and filterable. Both matter once a list is long:
+// a repository's workflow list runs to dozens of entries, and an uncapped one
+// scrolls the answer off the screen while the user hunts for it with the arrow
+// keys.
 func (r *Renderer) Select(title string, options []SelectOption) (string, error) {
 	if !r.interactive {
 		return "", &ErrNotInteractive{Flag: "--yes", What: title}
@@ -72,12 +77,27 @@ func (r *Renderer) Select(title string, options []SelectOption) (string, error) 
 
 	var value string
 	form := huh.NewForm(huh.NewGroup(
-		huh.NewSelect[string]().Title(title).Options(opts...).Value(&value),
+		huh.NewSelect[string]().
+			Title(title).
+			Options(opts...).
+			Height(selectHeight(len(options))).
+			Filtering(true).
+			Value(&value),
 	))
 	if err := r.runForm(form); err != nil {
 		return "", err
 	}
 	return value, nil
+}
+
+// selectHeight keeps a list on screen: tall enough to see the choices in
+// context, short enough that the prompt and the answer stay visible together.
+func selectHeight(options int) int {
+	const maxRows = 12
+	if options < maxRows {
+		return options + 1
+	}
+	return maxRows
 }
 
 // Input asks for a free-text value, pre-filled with def.

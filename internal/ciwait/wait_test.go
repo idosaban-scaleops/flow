@@ -30,6 +30,10 @@ func (f *fakeAPI) FindPR(context.Context, string, string, string) (ghapi.PRInfo,
 	return ghapi.PRInfo{State: ghapi.PRNone}, nil
 }
 
+func (f *fakeAPI) ListWorkflows(context.Context, string, string) ([]ghapi.Workflow, error) {
+	return nil, nil
+}
+
 func (f *fakeAPI) ListWorkflowRuns(_ context.Context, _, _, _, _ string, _ int) ([]ghapi.Run, error) {
 	if len(f.runs) == 0 {
 		return nil, nil

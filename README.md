@@ -205,7 +205,12 @@ and whether it was verified.
 
 A chart is only installable once CI has both published it to the Helm repository
 and pushed the images it references. `flow cluster upgrade` waits for exactly the
-jobs that gate that, configured per repository:
+jobs that gate that.
+
+`build_workflow` is learned on first use: the first cluster command that needs
+it lists the repository's workflows and asks which one publishes the chart, then
+records the answer. Non-interactively it refuses and names the key, the same way
+an unknown kube context is refused. The full block:
 
 ```yaml
 repos:

@@ -31,8 +31,15 @@ func SetCluster(path, context string, cc ClusterConfig) error {
 	return writeDocument(path, doc)
 }
 
-// SetRepoHelmRepo records the helm repo learned for a source repository.
-func SetRepoHelmRepo(path, repoKey, helmRepo, chartName string) error {
+// SetRepo merges the settings flow learned into the repos.{repoKey} block,
+// creating it when absent.
+//
+// Field by field, and deliberately not a whole-node replacement the way
+// SetCluster does it: learnCluster gathers every cluster field, whereas a repo
+// block is built up one answer at a time and usually shares the key with
+// settings the user wrote by hand. Replacing the node would delete them. A
+// zero-valued field means "leave whatever is there alone".
+func SetRepo(path, repoKey string, rc RepoConfig) error {
 	doc, err := loadDocument(path)
 	if err != nil {
 		return err
@@ -40,13 +47,30 @@ func SetRepoHelmRepo(path, repoKey, helmRepo, chartName string) error {
 
 	repos := ensureMapping(doc.root(), "repos")
 	entry := mapEntry(repos, repoKey)
-	if entry == nil {
+	if entry == nil || entry.Kind != yaml.MappingNode {
 		entry = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 		setMapEntry(repos, repoKey, entry)
 	}
-	setMapEntry(entry, "helm_repo", scalar(helmRepo))
-	if chartName != "" {
-		setMapEntry(entry, "chart_name", scalar(chartName))
+
+	// Ordered, not a map: the file this writes is read by people, and a
+	// random key order would churn it on every write.
+	for _, field := range []struct{ key, value string }{
+		{"base_branch", rc.BaseBranch},
+		{"helm_repo", rc.HelmRepo},
+		{"chart_name", rc.ChartName},
+		{"build_workflow", rc.BuildWorkflow},
+		{"chart_version_pattern", rc.ChartVersionPattern},
+	} {
+		if field.value != "" {
+			setMapEntry(entry, field.key, scalar(field.value))
+		}
+	}
+	if len(rc.WaitForJobs) > 0 {
+		jobs, err := toNode(rc.WaitForJobs)
+		if err != nil {
+			return fmt.Errorf("encode wait_for_jobs for %q: %w", repoKey, err)
+		}
+		setMapEntry(entry, "wait_for_jobs", jobs)
 	}
 
 	return writeDocument(path, doc)
@@ -192,6 +216,11 @@ func setMapEntry(m *yaml.Node, key string, value *yaml.Node) {
 func ensureMapping(root *yaml.Node, key string) *yaml.Node {
 	existing := mapEntry(root, key)
 	if existing != nil && existing.Kind == yaml.MappingNode {
+		// `clusters: {}` parses as a flow-style mapping, and yaml.v3 keeps
+		// that style when re-encoding: everything flow ever writes under it
+		// would come back as one unreadable line. The file is meant to be
+		// edited by hand, so force block style the moment it gains content.
+		existing.Style = 0
 		return existing
 	}
 	created := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
