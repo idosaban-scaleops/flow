@@ -12,6 +12,7 @@ import (
 	"github.com/idosaban-scaleops/flow/internal/config"
 	"github.com/idosaban-scaleops/flow/internal/helmx"
 	"github.com/idosaban-scaleops/flow/internal/kube"
+	"github.com/idosaban-scaleops/flow/internal/output"
 )
 
 // kubeContextArg is the value to pass to helm's --kube-context: always the
@@ -31,14 +32,27 @@ import (
 func (t clusterTarget) kubeContextArg() string { return t.Context }
 
 func newClusterStatusCommand(app *App) *cobra.Command {
-	var flags clusterFlags
+	var (
+		flags    clusterFlags
+		watch    bool
+		interval time.Duration
+	)
 
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show the deployed release and the namespace's pods",
-		Args:  cobra.NoArgs,
+		Long: "Show the release helm has deployed and the state of every pod in its\n" +
+			"namespace.\n\n" +
+			"--watch repaints the whole view — release fields and pod table alike — in\n" +
+			"place until you quit with q, which is the shape to leave running beside a\n" +
+			"`flow cluster upgrade` while the new pods come up.",
+		Args: cobra.NoArgs,
 	}
 	flags.register(cmd.Flags())
+	f := cmd.Flags()
+	f.BoolVarP(&watch, "watch", "w", false, "repaint the status in place until you quit")
+	f.DurationVar(&interval, "interval", output.DefaultWatchInterval,
+		"how often --watch re-reads the cluster (never faster than 1s)")
 
 	cmd.RunE = app.run(func(ctx context.Context) error {
 		target, err := app.clusterOnly(ctx, flags)
@@ -46,9 +60,15 @@ func newClusterStatusCommand(app *App) *cobra.Command {
 			return err
 		}
 
-		release, relErr := app.ReadHelm().Status(ctx,
-			target.Settings.ReleaseName, target.Settings.Namespace, target.kubeContextArg())
-		pods, podErr := app.Kube().Pods(ctx, target.kubeContextArg(), target.Settings.Namespace)
+		// --json reports one snapshot: a document that has to be a single
+		// object on stdout is not something to repaint.
+		if watch && !app.JSON() {
+			return app.Out.Watch(ctx, interval, func(ctx context.Context) string {
+				return app.statusFrame(target, app.readClusterStatus(ctx, target))
+			})
+		}
+
+		snap := app.readClusterStatus(ctx, target)
 
 		if app.JSON() {
 			payload := map[string]any{
@@ -56,48 +76,120 @@ func newClusterStatusCommand(app *App) *cobra.Command {
 				"server":       target.Server,
 				"release":      target.Settings.ReleaseName,
 				"namespace":    target.Settings.Namespace,
-				"pods":         podPayload(pods),
+				"pods":         podPayload(snap.pods),
 			}
-			if relErr == nil {
-				payload["deployed"] = release
+			if snap.relErr == nil {
+				payload["deployed"] = snap.release
 			} else {
-				payload["deployed_error"] = relErr.Error()
+				payload["deployed_error"] = snap.relErr.Error()
 			}
 			return app.Out.JSON(payload)
 		}
 
 		app.printClusterHeader(target, nil, nil)
 
-		if relErr != nil {
+		if snap.relErr != nil {
 			app.Out.Warn("no helm release %q in %s: %v",
-				target.Settings.ReleaseName, target.Settings.Namespace, relErr)
+				target.Settings.ReleaseName, target.Settings.Namespace, snap.relErr)
 		} else {
-			app.Out.Field("revision", fmt.Sprint(release.Revision))
-			app.Out.Field("status", app.styleReleaseStatus(release.Status))
-			// Only present when the release is not deployed, where it carries
-			// helm's reason for that.
-			if release.Description != "" {
-				app.Out.Field("description", release.Description)
-			}
-			if release.ChartVersion != "" {
-				app.Out.Field("chart", release.ChartVersion)
-			}
-			if release.AppVersion != "" {
-				app.Out.Field("app version", release.AppVersion)
-			}
-			if !release.LastDeployed.IsZero() {
-				app.Out.Field("last deployed", release.LastDeployed.Local().Format(time.RFC1123))
+			for _, field := range app.releaseFields(snap.release) {
+				app.Out.Field(field[0], field[1])
 			}
 			app.Out.Println()
 		}
 
-		if podErr != nil {
-			return Wrap(ExitDependency, "dependency", podErr, "listing pods in %s", target.Settings.Namespace)
+		if snap.podErr != nil {
+			return Wrap(ExitDependency, "dependency", snap.podErr,
+				"listing pods in %s", target.Settings.Namespace)
 		}
-		app.renderPods(pods)
+		app.renderPods(snap.pods)
 		return nil
 	})
 	return cmd
+}
+
+// clusterStatus is one reading of the cluster. Both reads are taken together so
+// that a watch frame shows a single consistent moment, and each carries its own
+// error: a missing release says nothing about whether the pods are listable.
+type clusterStatus struct {
+	release helmx.Release
+	relErr  error
+	pods    []kube.Pod
+	podErr  error
+}
+
+func (a *App) readClusterStatus(ctx context.Context, target clusterTarget) clusterStatus {
+	var snap clusterStatus
+	snap.release, snap.relErr = a.ReadHelm().Status(ctx,
+		target.Settings.ReleaseName, target.Settings.Namespace, target.kubeContextArg())
+	snap.pods, snap.podErr = a.Kube().Pods(ctx, target.kubeContextArg(), target.Settings.Namespace)
+	return snap
+}
+
+// releaseFields is the label/value list the deployed release contributes, in
+// display order, so the printed status and the watch frame cannot drift apart.
+func (a *App) releaseFields(release helmx.Release) [][2]string {
+	fields := [][2]string{
+		{"revision", fmt.Sprint(release.Revision)},
+		{"status", a.styleReleaseStatus(release.Status)},
+	}
+	// Only present when the release is not deployed, where it carries helm's
+	// reason for that.
+	if release.Description != "" {
+		fields = append(fields, [2]string{"description", release.Description})
+	}
+	if release.ChartVersion != "" {
+		fields = append(fields, [2]string{"chart", release.ChartVersion})
+	}
+	if release.AppVersion != "" {
+		fields = append(fields, [2]string{"app version", release.AppVersion})
+	}
+	if !release.LastDeployed.IsZero() {
+		fields = append(fields,
+			[2]string{"last deployed", release.LastDeployed.Local().Format(time.RFC1123)})
+	}
+	return fields
+}
+
+// statusFrame renders the whole status as one string, for --watch to repaint.
+// It builds text and nothing else — the same split internal/ciwait uses, where
+// the frame is pure and the program around it is thin.
+func (a *App) statusFrame(target clusterTarget, snap clusterStatus) string {
+	t := a.Out.Theme
+	var b strings.Builder
+
+	b.WriteString(a.Out.RenderField("kube context", t.Bold.Render(target.Context)) + "\n")
+	if target.Server != "" {
+		b.WriteString(a.Out.RenderField("server", target.Server) + "\n")
+	}
+	b.WriteString(a.Out.RenderField("release", target.Settings.ReleaseName) + "\n")
+	b.WriteString(a.Out.RenderField("namespace", target.Settings.Namespace) + "\n\n")
+
+	if snap.relErr != nil {
+		b.WriteString(t.Warn.Render(fmt.Sprintf("%s no helm release %q in %s",
+			output.SymWarn, target.Settings.ReleaseName, target.Settings.Namespace)) + "\n\n")
+	} else {
+		for _, field := range a.releaseFields(snap.release) {
+			b.WriteString(a.Out.RenderField(field[0], field[1]) + "\n")
+		}
+		b.WriteString("\n")
+	}
+
+	switch {
+	case snap.podErr != nil:
+		b.WriteString(t.Error.Render(fmt.Sprintf("%s could not list pods in %s",
+			output.SymFail, target.Settings.Namespace)) + "\n")
+	case len(snap.pods) == 0:
+		b.WriteString(t.Muted.Render("no pods in the namespace") + "\n")
+	default:
+		rows, unhealthy := a.podRows(snap.pods)
+		b.WriteString(a.Out.RenderTable(podHeaders, rows) + "\n")
+		if unhealthy > 0 {
+			b.WriteString(t.Warn.Render(fmt.Sprintf("%s %d pod(s) are not Running or Succeeded",
+				output.SymWarn, unhealthy)) + "\n")
+		}
+	}
+	return b.String()
 }
 
 func podPayload(pods []kube.Pod) []map[string]any {
@@ -111,15 +203,29 @@ func podPayload(pods []kube.Pod) []map[string]any {
 	return out
 }
 
+// podHeaders is the pod table's header row, shared by the printed table and
+// the watch frame.
+var podHeaders = []string{"POD", "READY", "STATE", "RESTARTS"}
+
 func (a *App) renderPods(pods []kube.Pod) {
 	if len(pods) == 0 {
 		a.Out.Status("no pods in the namespace")
 		return
 	}
 
+	rows, unhealthy := a.podRows(pods)
+	a.Out.Table(podHeaders, rows)
+
+	if unhealthy > 0 {
+		a.Out.Warn("%d pod(s) are not Running or Succeeded", unhealthy)
+	}
+}
+
+// podRows builds the styled table rows and counts the pods worth worrying
+// about.
+func (a *App) podRows(pods []kube.Pod) (rows [][]string, unhealthy int) {
 	t := a.Out.Theme
-	rows := make([][]string, 0, len(pods))
-	var unhealthy int
+	rows = make([][]string, 0, len(pods))
 	for _, p := range pods {
 		state := p.Phase
 		if p.Reason != "" {
@@ -137,11 +243,7 @@ func (a *App) renderPods(pods []kube.Pod) {
 		}
 		rows = append(rows, []string{p.Name, fmt.Sprintf("%d/%d", p.Ready, p.Total), state, restarts})
 	}
-	a.Out.Table([]string{"POD", "READY", "STATE", "RESTARTS"}, rows)
-
-	if unhealthy > 0 {
-		a.Out.Warn("%d pod(s) are not Running or Succeeded", unhealthy)
-	}
+	return rows, unhealthy
 }
 
 func (a *App) styleReleaseStatus(status string) string {

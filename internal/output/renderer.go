@@ -223,7 +223,13 @@ func (r *Renderer) Heading(s string) {
 
 // Field writes an aligned "label: value" line to stdout.
 func (r *Renderer) Field(label, value string) {
-	fmt.Fprintf(r.out, "%s %s\n", r.Theme.Muted.Render(pad(label+":", 18)), value)
+	fmt.Fprintln(r.out, r.RenderField(label, value))
+}
+
+// RenderField returns the same line Field writes, for callers assembling a
+// frame to repaint rather than a stream to append — Watch's, in particular.
+func (r *Renderer) RenderField(label, value string) string {
+	return fmt.Sprintf("%s %s", r.Theme.Muted.Render(pad(label+":", 18)), value)
 }
 
 func pad(s string, n int) string {
@@ -236,6 +242,11 @@ func pad(s string, n int) string {
 // Table renders rows with lipgloss/table, which measures rendered width and so
 // aligns correctly even when cells carry ANSI escapes.
 func (r *Renderer) Table(headers []string, rows [][]string) {
+	fmt.Fprintln(r.out, r.RenderTable(headers, rows))
+}
+
+// RenderTable returns the table Table writes, for frame-assembling callers.
+func (r *Renderer) RenderTable(headers []string, rows [][]string) string {
 	t := table.New().
 		Border(lipgloss.NormalBorder()).
 		BorderTop(false).BorderBottom(false).BorderLeft(false).
@@ -249,7 +260,7 @@ func (r *Renderer) Table(headers []string, rows [][]string) {
 			}
 			return lipgloss.NewStyle().PaddingRight(2)
 		})
-	fmt.Fprintln(r.out, t.Render())
+	return t.Render()
 }
 
 // JSON writes v as the command's single JSON object on stdout.

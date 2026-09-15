@@ -76,7 +76,7 @@ flow delete RD-19471
 | `flow cluster upgrade [ticket]` | Wait for CI, then `helm upgrade` the dev cluster |
 | `flow cluster version [ticket]` | Print the chart version CI built for the branch |
 | `flow cluster wait [ticket]` | Wait until the branch's chart is installable |
-| `flow cluster status` | Deployed release plus a pod summary |
+| `flow cluster status` | Deployed release plus a pod summary; `--watch` repaints it live |
 | `flow cluster history` | Release revision history |
 | `flow cluster rollback [rev]` | Roll back to a previous revision |
 | `flow cluster uninstall` | Uninstall the release |
@@ -231,6 +231,19 @@ Progress renders live to **stderr**, so stdout stays clean for `--json` and for
 `helm upgrade --version $(flow cluster wait)`. In a pipe, under `--no-color`, or
 in `--json` mode it degrades to one appended line per state transition, never a
 repeated heartbeat.
+
+Once CI is satisfied, `helm upgrade` itself runs under a spinner: helm prints
+nothing until it has finished, and under `--helm-wait` or `--atomic` that is
+minutes of otherwise blank terminal. Its output is replayed in full when it
+returns.
+
+### Watching the rollout
+
+`flow cluster status --watch` re-reads the release and the namespace's pods on a
+timer — `--interval`, 5s by default — and repaints the whole view in place until
+you quit with `q`. It is the companion to an upgrade: leave it running in a
+second pane and watch the new pods come up. Outside a terminal, and under
+`--json`, it prints one snapshot instead.
 
 ## Configuration
 

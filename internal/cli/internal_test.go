@@ -1,11 +1,17 @@
 package cli
 
 import (
+	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/idosaban-scaleops/flow/internal/config"
 	flowexec "github.com/idosaban-scaleops/flow/internal/exec"
+	"github.com/idosaban-scaleops/flow/internal/helmx"
+	"github.com/idosaban-scaleops/flow/internal/kube"
+	"github.com/idosaban-scaleops/flow/internal/output"
 )
 
 func durationSeconds(n int) time.Duration { return time.Duration(n) * time.Second }
@@ -281,6 +287,79 @@ func TestDryRunClassifiesNonGitTools(t *testing.T) {
 			got := isReadOnlyCommand(flowexec.Opts{Name: tt.name, Args: tt.args})
 			if got != tt.wantRead {
 				t.Errorf("isReadOnlyCommand = %v, want %v", got, tt.wantRead)
+			}
+		})
+	}
+}
+
+// TestStatusFrame pins the one part of `cluster status --watch` worth pinning:
+// the frame is a pure string, so every state the watch can be in is checkable
+// without a terminal or a cluster.
+func TestStatusFrame(t *testing.T) {
+	app := &App{Out: output.New(output.Options{
+		NoColor: true, Stdout: io.Discard, Stderr: io.Discard,
+	})}
+	target := clusterTarget{
+		Context: "dev", Server: "https://dev.example",
+		Settings: config.ClusterConfig{ReleaseName: "scaleops", Namespace: "scaleops-system"},
+	}
+
+	tests := []struct {
+		name     string
+		snap     clusterStatus
+		want     []string
+		wantGone []string
+	}{
+		{
+			name: "deployed release with pods",
+			snap: clusterStatus{
+				release: helmx.Release{Revision: 7, Status: "deployed", ChartVersion: "1.0.1-alpha"},
+				pods: []kube.Pod{
+					{Name: "scaleops-agent", Phase: "Running", Ready: 1, Total: 1},
+				},
+			},
+			want:     []string{"kube context", "dev", "revision", "7", "deployed", "1.0.1-alpha", "scaleops-agent", "1/1"},
+			wantGone: []string{"not Running"},
+		},
+		{
+			name: "unhealthy pod is counted",
+			snap: clusterStatus{
+				release: helmx.Release{Revision: 1, Status: "failed", Description: "upgrade failed"},
+				pods: []kube.Pod{
+					{Name: "broken", Phase: "Pending", Reason: "ImagePullBackOff", Ready: 0, Total: 1},
+				},
+			},
+			want: []string{"failed", "upgrade failed", "ImagePullBackOff", "1 pod(s) are not Running"},
+		},
+		{
+			name:     "no release yet",
+			snap:     clusterStatus{relErr: errors.New("release: not found")},
+			want:     []string{"no helm release", "no pods in the namespace"},
+			wantGone: []string{"revision"},
+		},
+		{
+			name: "pods cannot be listed",
+			snap: clusterStatus{
+				release: helmx.Release{Revision: 2, Status: "deployed"},
+				podErr:  errors.New("connection refused"),
+			},
+			want:     []string{"could not list pods in scaleops-system"},
+			wantGone: []string{"no pods in the namespace"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			frame := app.statusFrame(target, tt.snap)
+			for _, want := range tt.want {
+				if !strings.Contains(frame, want) {
+					t.Errorf("frame is missing %q:\n%s", want, frame)
+				}
+			}
+			for _, gone := range tt.wantGone {
+				if strings.Contains(frame, gone) {
+					t.Errorf("frame should not mention %q:\n%s", gone, frame)
+				}
 			}
 		})
 	}
