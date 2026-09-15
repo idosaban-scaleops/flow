@@ -191,6 +191,14 @@ func (h *Helm) Upgrade(ctx context.Context, o UpgradeOptions) error {
 	return err
 }
 
+// UpgradeCaptured runs the same upgrade with helm's output captured instead of
+// streamed, so the caller can drive a spinner while helm works. The Result is
+// returned even on failure: ExitError carries only the first line of stderr,
+// and a helm failure is rarely one line.
+func (h *Helm) UpgradeCaptured(ctx context.Context, o UpgradeOptions) (flowexec.Result, error) {
+	return h.Runner.Run(ctx, flowexec.Opts{Name: h.Bin, Args: o.UpgradeArgs()})
+}
+
 // StatusDeployed is helm's status for a release whose last operation
 // succeeded. Every other status — failed, pending-upgrade, uninstalling — means
 // the release needs explaining.

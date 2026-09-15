@@ -177,8 +177,8 @@ func (a *App) runUpgrade(ctx context.Context, args []string, opts upgradeOptions
 		return err
 	}
 
-	// 7. Execute, streaming helm's output straight through.
-	if err := a.Helm().Upgrade(ctx, upgrade); err != nil {
+	// 7. Execute.
+	if err := a.runHelmUpgrade(ctx, upgrade); err != nil {
 		return Wrap(ExitDependency, "helm_failed", err, "helm upgrade")
 	}
 	payload.Executed = true
@@ -188,6 +188,41 @@ func (a *App) runUpgrade(ctx context.Context, args []string, opts upgradeOptions
 		return a.Out.JSON(payload)
 	}
 	a.reportRevision(ctx, target)
+	return nil
+}
+
+// runHelmUpgrade runs the upgrade with something on screen while it works.
+//
+// helm prints nothing until it has finished — and under --helm-wait or
+// --atomic that is minutes of blank terminal, which is indistinguishable from
+// a hang. Interactively, helm's output is therefore captured and replayed
+// under a spinner. Everywhere else it still streams, so piped runs and CI logs
+// are byte-for-byte what they were.
+func (a *App) runHelmUpgrade(ctx context.Context, upgrade helmx.UpgradeOptions) error {
+	helm := a.Helm()
+	if !a.Out.Interactive() {
+		return helm.Upgrade(ctx, upgrade)
+	}
+
+	var res flowexec.Result
+	err := a.Out.Spin(ctx, fmt.Sprintf("upgrading %s in %s…", upgrade.Release, upgrade.Namespace),
+		func() error {
+			var runErr error
+			res, runErr = helm.UpgradeCaptured(ctx, upgrade)
+			return runErr
+		})
+
+	// Replay helm's own output either way: NOTES.txt on the way through, and
+	// the whole failure on the way out, since the error carries one line of it.
+	if out := strings.TrimSpace(res.Stdout); out != "" {
+		a.Out.Println(out)
+	}
+	if err != nil {
+		if stderr := strings.TrimSpace(res.Stderr); stderr != "" {
+			a.Out.Failure("%s", stderr)
+		}
+		return err
+	}
 	return nil
 }
 
