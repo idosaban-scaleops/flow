@@ -156,6 +156,74 @@ func TestReplaceValuesFlag(t *testing.T) {
 	}
 }
 
+func TestUpgradeErrorSuggestsForceConflicts(t *testing.T) {
+	conflict := &flowexec.ExitError{Cmd: "helm upgrade", Result: flowexec.Result{
+		ExitCode: 1,
+		Stderr: `Error: UPGRADE FAILED: conflict occurred while applying object ns/d apps/v1, Kind=Deployment: ` +
+			`Apply failed with 1 conflict: conflict with "kubectl-set" using apps/v1: .spec.template.spec.containers[name="c"].image`,
+	}}
+	other := &flowexec.ExitError{Cmd: "helm upgrade", Result: flowexec.Result{
+		ExitCode: 1, Stderr: "Error: UPGRADE FAILED: context deadline exceeded",
+	}}
+
+	tests := []struct {
+		name     string
+		err      error
+		upgrade  helmx.UpgradeOptions
+		wantKind string
+		wantHint bool
+	}{
+		{name: "an apply conflict", err: conflict, wantKind: "helm_conflict", wantHint: true},
+		{
+			name: "already forced by flag", err: conflict,
+			upgrade:  helmx.UpgradeOptions{ForceConflicts: true},
+			wantKind: "helm_failed",
+		},
+		{
+			name: "already forced by extra_args", err: conflict,
+			upgrade:  helmx.UpgradeOptions{ExtraArgs: []string{"--force-conflicts"}},
+			wantKind: "helm_failed",
+		},
+		{name: "an unrelated helm failure", err: other, wantKind: "helm_failed"},
+		{name: "not a helm exit at all", err: errors.New("boom"), wantKind: "helm_failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := upgradeError(tt.err, tt.upgrade)
+			if got := KindFor(err); got != tt.wantKind {
+				t.Errorf("kind = %q, want %q", got, tt.wantKind)
+			}
+			if got := ExitCodeFor(err); got != ExitDependency {
+				t.Errorf("exit code = %d, want %d", got, ExitDependency)
+			}
+			msg := err.Error()
+			if hint := strings.Contains(msg, "rerun with --force-conflicts"); hint != tt.wantHint {
+				t.Errorf("hint shown = %v, want %v, in %q", hint, tt.wantHint, msg)
+			}
+			if tt.wantHint && !strings.Contains(msg, `"kubectl-set"`) {
+				t.Errorf("the hint should name the owning manager, got %q", msg)
+			}
+		})
+	}
+}
+
+func TestBuildUpgradeForceConflictsIsNotRepeated(t *testing.T) {
+	target := clusterTarget{Context: "dev", Settings: config.ClusterConfig{
+		ReleaseName: "r", Chart: "c", Namespace: "ns",
+		ExtraArgs: []string{"--force-conflicts"},
+	}}
+	got := (&App{}).buildUpgrade(target, "v1", upgradeOptions{forceConflicts: true}).CommandLine("helm")
+	if n := strings.Count(got, "--force-conflicts"); n != 1 {
+		t.Errorf("--force-conflicts appears %d times in %s", n, got)
+	}
+
+	target.Settings.ExtraArgs = nil
+	got = (&App{}).buildUpgrade(target, "v1", upgradeOptions{forceConflicts: true}).CommandLine("helm")
+	if !strings.Contains(got, "--force-conflicts") {
+		t.Errorf("the flag should reach helm, got %s", got)
+	}
+}
+
 func TestHumanAge(t *testing.T) {
 	tests := []struct {
 		seconds int

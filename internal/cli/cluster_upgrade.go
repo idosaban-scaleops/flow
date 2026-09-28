@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -32,6 +33,7 @@ type upgradeOptions struct {
 	createNS       bool
 	install        bool
 	noRepoUpdate   bool
+	forceConflicts bool
 }
 
 type upgradePayload struct {
@@ -64,7 +66,12 @@ Note the two waits: --helm-wait is helm's own rollout wait, while the CI wait is
 on by default and is turned off with --no-wait.
 
 The baseline command is helm upgrade, not helm upgrade --install; pass --install
-to opt in.`),
+to opt in.
+
+Helm 4 applies objects server-side, and refuses to overwrite a field another
+field manager owns — an image changed with kubectl set image, say.
+--force-conflicts lets helm take such fields back; flow suggests it when an
+upgrade fails that way.`),
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: app.completeTickets,
 	}
@@ -86,6 +93,8 @@ to opt in.`),
 	f.BoolVar(&opts.createNS, "create-namespace", false, "pass --create-namespace to helm")
 	f.BoolVar(&opts.install, "install", false, "use helm upgrade --install")
 	f.BoolVar(&opts.noRepoUpdate, "no-repo-update", false, "skip helm repo update, but still verify the index")
+	f.BoolVar(&opts.forceConflicts, "force-conflicts", false,
+		"pass --force-conflicts to helm, taking back fields another manager (e.g. kubectl set image) owns")
 
 	cmd.MarkFlagsMutuallyExclusive("reuse-values", "reset-then-reuse-values", "reset-values")
 
@@ -179,7 +188,7 @@ func (a *App) runUpgrade(ctx context.Context, args []string, opts upgradeOptions
 
 	// 7. Execute.
 	if err := a.runHelmUpgrade(ctx, upgrade); err != nil {
-		return Wrap(ExitDependency, "helm_failed", err, "helm upgrade")
+		return upgradeError(err, upgrade)
 	}
 	payload.Executed = true
 
@@ -224,6 +233,30 @@ func (a *App) runHelmUpgrade(ctx context.Context, upgrade helmx.UpgradeOptions) 
 		return err
 	}
 	return nil
+}
+
+// upgradeError wraps a failed upgrade, pointing at --force-conflicts when helm
+// refused to overwrite a field another field manager owns.
+func upgradeError(err error, upgrade helmx.UpgradeOptions) error {
+	var exitErr *flowexec.ExitError
+	if !errors.As(err, &exitErr) || hasForceConflicts(upgrade) {
+		return Wrap(ExitDependency, "helm_failed", err, "helm upgrade")
+	}
+	manager, ok := helmx.ApplyConflict(exitErr.Result.Stderr)
+	if !ok {
+		return Wrap(ExitDependency, "helm_failed", err, "helm upgrade")
+	}
+	owner := "another field manager"
+	if manager != "" {
+		owner = fmt.Sprintf("field manager %q", manager)
+	}
+	return Wrap(ExitDependency, "helm_conflict", err,
+		"helm upgrade: %s owns fields the chart sets; rerun with --force-conflicts to let helm take them back",
+		owner)
+}
+
+func hasForceConflicts(upgrade helmx.UpgradeOptions) bool {
+	return upgrade.ForceConflicts || slices.Contains(upgrade.ExtraArgs, helmx.ForceConflictsFlag)
 }
 
 // upgradeTargetBranch resolves which branch to install, from a ticket argument,
@@ -298,6 +331,10 @@ func (a *App) buildUpgrade(target clusterTarget, version string, opts upgradeOpt
 		extra = replaceValuesFlag(extra, "--reset-values")
 	}
 
+	// extra_args may already force conflicts for this cluster; passing the
+	// flag twice works, but the printed command should not say it twice.
+	forceConflicts := opts.forceConflicts && !slices.Contains(extra, helmx.ForceConflictsFlag)
+
 	return helmx.UpgradeOptions{
 		Release:     settings.ReleaseName,
 		Chart:       settings.Chart,
@@ -312,6 +349,8 @@ func (a *App) buildUpgrade(target clusterTarget, version string, opts upgradeOpt
 		Atomic:      opts.atomic,
 		CreateNS:    opts.createNS,
 		Timeout:     opts.timeout,
+
+		ForceConflicts: forceConflicts,
 	}
 }
 

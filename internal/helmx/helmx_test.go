@@ -108,6 +108,11 @@ func TestUpgradeArgsOrderAndContent(t *testing.T) {
 			want: "helm upgrade r c --namespace ns --create-namespace --wait --atomic --timeout 10m",
 		},
 		{
+			name: "forcing server-side apply conflicts",
+			opts: helmx.UpgradeOptions{Release: "r", Chart: "c", Namespace: "ns", ForceConflicts: true},
+			want: "helm upgrade r c --namespace ns --force-conflicts",
+		},
+		{
 			name: "server-side dry run",
 			opts: helmx.UpgradeOptions{Release: "r", Chart: "c", Namespace: "ns", DryRun: true},
 			want: "helm upgrade r c --namespace ns --dry-run",
@@ -127,6 +132,48 @@ func TestUpgradeArgsOrderAndContent(t *testing.T) {
 			// The printed command and the executed one must never diverge.
 			if got := f.CommandLines()[0]; got != tt.want {
 				t.Errorf("executed\n  %s\nbut printed\n  %s", got, tt.want)
+			}
+		})
+	}
+}
+
+// applyConflictStderr is real helm 4 stderr from an upgrade whose dashboard
+// image had been changed with kubectl set image.
+const applyConflictStderr = `level=WARN msg="upgrade failed" name=scaleops error="conflict occurred while applying ` +
+	`object scaleops-system/scaleops-dashboards apps/v1, Kind=Deployment: Apply failed with 1 conflict: ` +
+	`conflict with \"kubectl-set\" using apps/v1: .spec.template.spec.containers[name=\"dashboard\"].image"
+Error: UPGRADE FAILED: conflict occurred while applying object scaleops-system/scaleops-dashboards apps/v1, ` +
+	`Kind=Deployment: Apply failed with 1 conflict: conflict with "kubectl-set" using apps/v1: ` +
+	`.spec.template.spec.containers[name="dashboard"].image
+`
+
+func TestApplyConflict(t *testing.T) {
+	tests := []struct {
+		name        string
+		stderr      string
+		wantManager string
+		wantOK      bool
+	}{
+		{name: "helm's real output", stderr: applyConflictStderr, wantManager: "kubectl-set", wantOK: true},
+		{
+			name: "several conflicts",
+			stderr: `Error: UPGRADE FAILED: Apply failed with 2 conflicts: ` +
+				`conflicts with "kubectl-edit" using apps/v1: .spec.replicas`,
+			wantManager: "kubectl-edit", wantOK: true,
+		},
+		{
+			name:   "no manager named",
+			stderr: `Error: UPGRADE FAILED: Apply failed with 1 conflict`,
+			wantOK: true,
+		},
+		{name: "an unrelated failure", stderr: `Error: UPGRADE FAILED: context deadline exceeded`},
+		{name: "no stderr at all"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager, ok := helmx.ApplyConflict(tt.stderr)
+			if manager != tt.wantManager || ok != tt.wantOK {
+				t.Errorf("ApplyConflict = (%q, %v), want (%q, %v)", manager, ok, tt.wantManager, tt.wantOK)
 			}
 		})
 	}

@@ -3,6 +3,7 @@ package exec_test
 import (
 	"context"
 	"errors"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -69,6 +70,30 @@ func TestRealRunCapturesOutputAndExitCode(t *testing.T) {
 	}
 	if !strings.Contains(exitErr.Error(), "oops") {
 		t.Errorf("the error should carry the command's stderr, got %q", exitErr)
+	}
+}
+
+func TestRealRunKeepsStreamedStderrOnlyWhenAsked(t *testing.T) {
+	var terminal strings.Builder
+	r := &flowexec.Real{Stdout: io.Discard, Stderr: &terminal}
+	opts := flowexec.Opts{Name: "sh", Args: []string{"-c", "echo oops >&2; exit 1"}, Stream: true}
+
+	res, _ := r.Run(context.Background(), opts)
+	if res.Stderr != "" {
+		t.Errorf("a plain streamed run should not capture stderr, got %q", res.Stderr)
+	}
+
+	terminal.Reset()
+	opts.KeepStderr = true
+	res, err := r.Run(context.Background(), opts)
+	if strings.TrimSpace(res.Stderr) != "oops" {
+		t.Errorf("KeepStderr should capture stderr, got %q", res.Stderr)
+	}
+	if strings.TrimSpace(terminal.String()) != "oops" {
+		t.Errorf("KeepStderr should still stream stderr, terminal got %q", terminal.String())
+	}
+	if err == nil || !strings.Contains(err.Error(), "oops") {
+		t.Errorf("the error should carry the captured stderr, got %v", err)
 	}
 }
 

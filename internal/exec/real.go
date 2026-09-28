@@ -50,6 +50,9 @@ func (r *Real) Run(ctx context.Context, opts Opts) (Result, error) {
 	if opts.Stream {
 		cmd.Stdout = orDefault(r.Stdout, os.Stdout)
 		cmd.Stderr = orDefault(r.Stderr, os.Stderr)
+		if opts.KeepStderr {
+			cmd.Stderr = io.MultiWriter(cmd.Stderr, &stderr)
+		}
 	} else {
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr

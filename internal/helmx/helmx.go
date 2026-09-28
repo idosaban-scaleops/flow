@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -128,6 +129,10 @@ type UpgradeOptions struct {
 	CreateNS    bool
 	Timeout     string
 	DryRun      bool
+	// ForceConflicts lets server-side apply (Helm 4's default) take over
+	// fields another field manager owns, such as an image set with
+	// kubectl set image.
+	ForceConflicts bool
 }
 
 // UpgradeArgs renders the full argv. It is exported so the command can print
@@ -168,6 +173,9 @@ func (o UpgradeOptions) UpgradeArgs() []string {
 	if o.Timeout != "" {
 		args = append(args, "--timeout", o.Timeout)
 	}
+	if o.ForceConflicts {
+		args = append(args, ForceConflictsFlag)
+	}
 	if o.DryRun {
 		args = append(args, "--dry-run")
 	}
@@ -183,10 +191,11 @@ func (o UpgradeOptions) CommandLine(bin string) string {
 }
 
 // Upgrade runs helm upgrade, streaming helm's output straight to the terminal
-// so the user sees progress and errors as helm produces them.
+// so the user sees progress and errors as helm produces them. stderr is kept
+// too, so a failure's ExitError can be matched against ApplyConflict.
 func (h *Helm) Upgrade(ctx context.Context, o UpgradeOptions) error {
 	_, err := h.Runner.Run(ctx, flowexec.Opts{
-		Name: h.Bin, Args: o.UpgradeArgs(), Stream: true,
+		Name: h.Bin, Args: o.UpgradeArgs(), Stream: true, KeepStderr: true,
 	})
 	return err
 }
@@ -197,6 +206,29 @@ func (h *Helm) Upgrade(ctx context.Context, o UpgradeOptions) error {
 // and a helm failure is rarely one line.
 func (h *Helm) UpgradeCaptured(ctx context.Context, o UpgradeOptions) (flowexec.Result, error) {
 	return h.Runner.Run(ctx, flowexec.Opts{Name: h.Bin, Args: o.UpgradeArgs()})
+}
+
+// ForceConflictsFlag is helm's flag for overriding server-side apply
+// conflicts.
+const ForceConflictsFlag = "--force-conflicts"
+
+// applyConflictManager pulls the owning field manager out of a server-side
+// apply conflict. helm prints the message twice, once as a log field with its
+// quotes escaped, so the backslash is optional.
+var applyConflictManager = regexp.MustCompile(`conflicts? with \\?"([^"\\]+)\\?"`)
+
+// ApplyConflict reports whether helm's stderr describes a server-side apply
+// conflict: a field in the chart is owned by another field manager, typically
+// because someone ran kubectl set image or kubectl edit on a helm-managed
+// object. manager is the owner's name, or "" if helm did not print one.
+func ApplyConflict(stderr string) (manager string, ok bool) {
+	if !strings.Contains(stderr, "Apply failed with") {
+		return "", false
+	}
+	if m := applyConflictManager.FindStringSubmatch(stderr); m != nil {
+		return m[1], true
+	}
+	return "", strings.Contains(stderr, "conflict")
 }
 
 // StatusDeployed is helm's status for a release whose last operation

@@ -32,6 +32,10 @@ type Opts struct {
 	Env    []string // appended to os.Environ()
 	Stdin  io.Reader
 	Stream bool // when true, pipe stdout/stderr straight to the terminal
+	// KeepStderr also captures a streamed command's stderr into Result, so
+	// its failure can be inspected. It costs the command a terminal on
+	// stderr, which is why it is not the default.
+	KeepStderr bool
 
 	// Secret suppresses verbose logging of this command's output. Set it for
 	// anything that prints a credential (the keychain lookup, for example) so

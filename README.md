@@ -237,6 +237,12 @@ nothing until it has finished, and under `--helm-wait` or `--atomic` that is
 minutes of otherwise blank terminal. Its output is replayed in full when it
 returns.
 
+Helm 4 applies objects server-side and refuses to overwrite a field another
+field manager owns — typically an image changed with `kubectl set image`. When an
+upgrade fails that way, flow names the owner and suggests `--force-conflicts`,
+which lets helm take the field back. To force it on every upgrade of a cluster,
+add `--force-conflicts` to that cluster's `extra_args`.
+
 ### Watching the rollout
 
 `flow cluster status --watch` re-reads the release and the namespace's pods on a
