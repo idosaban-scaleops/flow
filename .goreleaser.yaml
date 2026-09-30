@@ -89,7 +89,7 @@ homebrew_casks:
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     homepage: https://github.com/idosaban-scaleops/flow
-    description: A personal workflow CLI for ticket-driven development
+    description: Personal workflow CLI for ticket-driven development
     binaries:
       - flow
     manpages:
@@ -98,14 +98,21 @@ homebrew_casks:
       bash: completions/flow.bash
       zsh: completions/flow.zsh
       fish: completions/flow.fish
-    hooks:
-      post:
-        # The binary is not signed or notarized, so without this macOS
-        # Gatekeeper refuses to run it ("flow is damaged and cannot be opened").
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/flow"]
-          end
+    # The binary is not signed or notarized, so without this macOS Gatekeeper
+    # refuses to run it ("flow is damaged and cannot be opened").
+    #
+    # Homebrew deprecated the Ruby `postflight` block that `hooks.post.install`
+    # generates in favour of the declarative `postflight_steps`, which GoReleaser
+    # cannot emit yet (goreleaser/goreleaser#6870). Until it can, write the stanza
+    # ourselves. `{{staged_path}}` is a Homebrew token, not a GoReleaser one, so it
+    # is escaped to reach the cask verbatim. `must_succeed: false` keeps the old
+    # hook's tolerance: a failed xattr never fails the install.
+    custom_block: |
+      postflight_steps do
+        on_macos do
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ "{{staged_path}}" }}/flow"], must_succeed: false
+        end
+      end
 
 release:
   prerelease: auto
